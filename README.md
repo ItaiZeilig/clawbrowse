@@ -1,7 +1,10 @@
-# JevBridge
+<p align="center">
+  <img src="assets/hero.png" alt="JevBridge — Claude Code drives your real Chrome" width="100%">
+</p>
 
-<!-- Replace assets/hero.png with the generated hero image (1280x640). -->
-<!-- ![JevBridge](assets/hero.png) -->
+<h1 align="center">
+  <img src="extension/icons/icon-48.png" width="28" align="top" alt=""> JevBridge
+</h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
