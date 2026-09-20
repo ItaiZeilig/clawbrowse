@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>JevBridge settings</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; max-width: 440px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
+    h1 { font-size: 18px; }
+    label { display: block; margin: 16px 0 4px; font-weight: 600; }
+    input { width: 120px; padding: 6px 8px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; }
+    button { margin-top: 16px; padding: 8px 14px; font-size: 14px; border: 0; border-radius: 6px; background: #16a34a; color: #fff; cursor: pointer; }
+    #status { margin-top: 16px; padding: 10px 12px; border-radius: 6px; background: #f4f4f5; }
+    .hint { color: #666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>JevBridge</h1>
+  <p class="hint">Drives your real Chrome tabs for Claude Code via a local bridge. The bridge (the MCP server) must be running on the same port.</p>
+  <label for="port">Bridge port</label>
+  <input id="port" type="number" min="1" max="65535">
+  <div><button id="save">Save & reconnect</button></div>
+  <div id="status">checking…</div>
+  <script src="options.js"></script>
+</body>
+</html>

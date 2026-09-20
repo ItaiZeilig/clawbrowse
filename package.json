@@ -1,0 +1,14 @@
+{
+  "name": "jevbridge",
+  "version": "0.1.0",
+  "description": "Let Claude Code drive your real, logged-in Chrome. A zero-dependency MCP server + a Chrome MV3 extension that uses jev-style element-table perception over CDP. The calling agent is the policy: no second model, no API keys, page snapshots never leave for a third party.",
+  "type": "module",
+  "bin": { "jevbridge": "mcp/server.mjs" },
+  "scripts": {
+    "start": "node mcp/server.mjs"
+  },
+  "keywords": ["mcp", "claude", "browser-automation", "chrome-extension", "jev", "cdp"],
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "files": ["mcp/", "extension/", "README.md", "LICENSE"]
+}
