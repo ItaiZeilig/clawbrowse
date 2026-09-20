@@ -1,0 +1,43 @@
+name: Bug report
+description: Report something that isn't working as expected
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please do **not** report security
+        vulnerabilities here — see [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I ran browser_observe on ..., I expected ... but got ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Load the extension
+        2. Open <page>
+        3. Call <tool> with <args>
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / errors
+      description: MCP server stderr (`[jevbridge] ...`), extension service-worker console, or tool output.
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: Environment
+      description: JevBridge version, OS, Chrome version, Node version.
+      placeholder: "jevbridge 0.1.0, macOS 15, Chrome 144, Node 22"
+    validations:
+      required: true

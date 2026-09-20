@@ -1,5 +1,13 @@
 # JevBridge
 
+<!-- Replace assets/hero.png with the generated hero image (1280x640). -->
+<!-- ![JevBridge](assets/hero.png) -->
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![Made for Claude Code](https://img.shields.io/badge/for-Claude%20Code-8A63D2.svg)](https://claude.com/claude-code)
+
 **Let Claude Code drive your real, logged-in Chrome** — the way the Claude-in-Chrome
 extension does, but open source and yours.
 
@@ -74,6 +82,21 @@ profile. That is the same capability class as any real-browser agent; use it del
 Everything here is auditable: the MCP server is one zero-dependency file (`mcp/server.mjs`),
 the extension is plain JS under `extension/`.
 
+## Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the dev setup,
+how to run the tests, and the PR process. By participating you agree to the
+**[Code of Conduct](CODE_OF_CONDUCT.md)**.
+
+## Security
+
+The extension holds powerful permissions, so security reports matter. Please **do not** open
+a public issue for vulnerabilities — see **[SECURITY.md](SECURITY.md)** for private reporting.
+
+## Support
+
+Questions or trouble? See **[SUPPORT.md](SUPPORT.md)**.
+
 ## License
 
-MIT.
+[MIT](LICENSE) © jevbridge contributors.

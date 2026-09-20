@@ -5,8 +5,13 @@
   "type": "module",
   "bin": { "jevbridge": "mcp/server.mjs" },
   "scripts": {
-    "start": "node mcp/server.mjs"
+    "start": "node mcp/server.mjs",
+    "test": "node test/bridge.test.mjs"
   },
+  "repository": { "type": "git", "url": "git+https://github.com/ItaiZeilig/jevbridge.git" },
+  "bugs": { "url": "https://github.com/ItaiZeilig/jevbridge/issues" },
+  "homepage": "https://github.com/ItaiZeilig/jevbridge#readme",
+  "author": "Itai Zeilig",
   "keywords": ["mcp", "claude", "browser-automation", "chrome-extension", "jev", "cdp"],
   "license": "MIT",
   "engines": { "node": ">=18" },
