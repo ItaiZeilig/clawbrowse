@@ -1,6 +1,6 @@
-# Contributing to JevBridge
+# Contributing to ClawBrowse
 
-Thanks for your interest in improving JevBridge! This project pairs a Chrome MV3
+Thanks for your interest in improving ClawBrowse! This project pairs a Chrome MV3
 extension with a zero-dependency MCP server. Contributions of all kinds are welcome:
 bug reports, docs, and code.
 
@@ -19,15 +19,15 @@ You need **Node.js ≥ 18** (Node ≥ 22 recommended so the test's global `WebSo
 works) and a Chromium-family browser.
 
 ```bash
-git clone https://github.com/ItaiZeilig/jevbridge.git
-cd jevbridge
+git clone https://github.com/ItaiZeilig/clawbrowse.git
+cd clawbrowse
 
 # 1. Run the MCP server (Claude Code normally launches this for you)
 node mcp/server.mjs
 
 # 2. Load the extension: chrome://extensions → Developer mode → Load unpacked → extension/
 # 3. Register with Claude Code:
-claude mcp add --scope user jevbridge -- node "$(pwd)/mcp/server.mjs"
+claude mcp add --scope user clawbrowse -- node "$(pwd)/mcp/server.mjs"
 ```
 
 See the [README](README.md#install-developer--unpacked) for the full install flow.

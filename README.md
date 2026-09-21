@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/hero.png" alt="JevBridge — Claude Code drives your real Chrome" width="100%">
+  <img src="assets/hero.png" alt="ClawBrowse — Claude Code drives your real Chrome" width="100%">
 </p>
 
 <h1 align="center">
-  <img src="extension/icons/icon-48.png" width="28" align="top" alt=""> JevBridge
+  <img src="extension/icons/icon-48.png" width="28" align="top" alt=""> ClawBrowse
 </h1>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -14,7 +14,7 @@
 **Let Claude Code drive your real, logged-in Chrome** — the way the Claude-in-Chrome
 extension does, but open source and yours.
 
-JevBridge pairs a tiny **MCP server** with a **Chrome MV3 extension**. The extension uses
+ClawBrowse pairs a tiny **MCP server** with a **Chrome MV3 extension**. The extension uses
 Chrome's built-in `chrome.debugger` (CDP) to read and act on your *actual* tabs — your
 profile, your logins, your open pages — with **no remote-debug port and no relaunch**. The
 page is read as a compact, numbered **element table** (jev-style), not screenshots.
@@ -28,7 +28,7 @@ Claude Code ──stdio(MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577�
 
 ## Why this instead of the alternatives
 
-| | Claude-in-Chrome | jev launch/attach | **JevBridge** |
+| | Claude-in-Chrome | jev launch/attach | **ClawBrowse** |
 |---|---|---|---|
 | Runs in your real logged-in Chrome | ✅ | ❌ (own profile / debug port) | ✅ (`chrome.debugger`, no port) |
 | Decision model | Claude | jev's model (paid, per-click) | **Claude (you), no key** |
@@ -46,9 +46,9 @@ Claude Code ──stdio(MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577�
 
 2. **Register the MCP server with Claude Code** (user scope):
    ```bash
-   claude mcp add --scope user jevbridge -- node /ABS/PATH/jevbridge/mcp/server.mjs
+   claude mcp add --scope user clawbrowse -- node /ABS/PATH/clawbrowse/mcp/server.mjs
    ```
-   (Optional: `--env JEVBRIDGE_PORT=10577` to change the port; set the same in the extension options.)
+   (Optional: `--env CLAWBROWSE_PORT=10577` to change the port; set the same in the extension options.)
 
 3. **Restart Claude Code** so the new tools load. The extension badge turns green (●) when it
    reaches the bridge.
@@ -76,7 +76,7 @@ the next observation of that page.
 
 ## Notes & limits
 
-- Attaching the debugger shows Chrome's "JevBridge is debugging this browser" banner — expected.
+- Attaching the debugger shows Chrome's "ClawBrowse is debugging this browser" banner — expected.
 - One debugger client per tab: a tab with DevTools open (or driven by another extension) can't be attached; switch tabs or close DevTools.
 - `chrome://`, the Web Store, and other browser pages can't be driven.
 - No cross-origin iframe traversal, canvas, or file uploads yet.
@@ -108,12 +108,12 @@ Questions or trouble? See **[SUPPORT.md](SUPPORT.md)**.
 
 ## Credits
 
-JevBridge's element-table perception and action-execution techniques — accessible-name
+ClawBrowse's element-table perception and action-execution techniques — accessible-name
 resolution, `checkVisibility` filtering, viewport-center hit-testing, stable node identity,
 and robust fill — are adapted from [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
-(MIT License). JevBridge is an independent reimplementation as a Chrome extension + MCP
+(MIT License). ClawBrowse is an independent reimplementation as a Chrome extension + MCP
 server, with the calling agent (not a separate model) as the decision-maker.
 
 ## License
 
-[MIT](LICENSE) © jevbridge contributors.
+[MIT](LICENSE) © clawbrowse contributors.

@@ -1,4 +1,4 @@
-// End-to-end round-trip test for the jevbridge MCP server.
+// End-to-end round-trip test for the clawbrowse MCP server.
 // Spawns the server, connects a fake extension over the WebSocket bridge, and drives it
 // through the MCP stdio interface. No browser required. Requires Node >= 22 (global WebSocket).
 //
@@ -14,7 +14,7 @@ const PORT = 10599;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const srv = spawn('node', [SERVER], {
-  env: { ...process.env, JEVBRIDGE_PORT: String(PORT) },
+  env: { ...process.env, CLAWBROWSE_PORT: String(PORT) },
   stdio: ['pipe', 'pipe', 'inherit'],
 });
 
@@ -56,7 +56,7 @@ const init = out.find((o) => o.id === 1);
 const list = out.find((o) => o.id === 2);
 const call = out.find((o) => o.id === 3);
 
-if (init?.result?.serverInfo?.name !== 'jevbridge') fail('initialize did not return serverInfo.name=jevbridge');
+if (init?.result?.serverInfo?.name !== 'clawbrowse') fail('initialize did not return serverInfo.name=clawbrowse');
 if (list?.result?.tools?.length !== 7) fail(`expected 7 tools, got ${list?.result?.tools?.length}`);
 if (lastCmd?.cmd !== 'observe') fail(`extension did not receive the observe command (got ${lastCmd?.cmd})`);
 if (call?.result?.content?.[0]?.text !== 'FAKE observe') fail('tool result did not round-trip from the extension');

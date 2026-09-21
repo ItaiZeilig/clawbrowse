@@ -64,5 +64,5 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/jevbridge/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/ItaiZeilig/jevbridge/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.0

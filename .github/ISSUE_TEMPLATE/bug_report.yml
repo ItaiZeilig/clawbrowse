@@ -31,13 +31,13 @@ body:
     id: logs
     attributes:
       label: Relevant logs / errors
-      description: MCP server stderr (`[jevbridge] ...`), extension service-worker console, or tool output.
+      description: MCP server stderr (`[clawbrowse] ...`), extension service-worker console, or tool output.
       render: shell
   - type: input
     id: versions
     attributes:
       label: Environment
-      description: JevBridge version, OS, Chrome version, Node version.
-      placeholder: "jevbridge 0.1.0, macOS 15, Chrome 144, Node 22"
+      description: ClawBrowse version, OS, Chrome version, Node version.
+      placeholder: "clawbrowse 0.1.0, macOS 15, Chrome 144, Node 22"
     validations:
       required: true

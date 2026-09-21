@@ -1,6 +1,6 @@
 # Security Policy
 
-JevBridge's extension holds powerful permissions (`debugger` + host access to all sites),
+ClawBrowse's extension holds powerful permissions (`debugger` + host access to all sites),
 which is exactly why we take security reports seriously. Thank you for helping keep users safe.
 
 ## Supported versions
@@ -23,7 +23,7 @@ Instead, use one of these private channels:
 1. **GitHub Private Vulnerability Reporting** (preferred) — go to the repository's
    **Security** tab → **Report a vulnerability**. This opens a private advisory visible only
    to the maintainers.
-2. **Email** — **itaizeilig1@gmail.com** with the subject line `JevBridge security`.
+2. **Email** — **itaizeilig1@gmail.com** with the subject line `ClawBrowse security`.
 
 Please include:
 

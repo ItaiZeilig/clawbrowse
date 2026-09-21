@@ -1,5 +1,5 @@
-// JevBridge background service worker.
-// Connects to the local jevbridge MCP bridge over WebSocket and drives the user's
+// ClawBrowse background service worker.
+// Connects to the local clawbrowse MCP bridge over WebSocket and drives the user's
 // real tabs via chrome.debugger (CDP) — no remote debug port, no relaunch needed.
 //
 // The element-table perception and action-execution techniques (accessible-name
@@ -123,7 +123,7 @@ async function resolveTabId(args) {
 
 const SNAPSHOT = `(function(){
   if(!document.body) return null;
-  var cache = window.__jevBridge || (window.__jevBridge = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
+  var cache = window.__clawbrowse || (window.__clawbrowse = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
   function safe(e){ return ['password','file','hidden'].indexOf(e.type)<0; }
@@ -246,7 +246,7 @@ async function observe(tabId) {
 // (elementFromPoint containment) so we never click a stale/covered/wrong target.
 async function resolveHit(tabId, ref) {
   return evaluate(tabId, `(function(){
-    var c=window.__jevBridge; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
+    var c=window.__clawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
     var node=c.byId[${JSON.stringify(String(ref))}];
     if(node==null) return {error:'unknown ref (observe again)'};
     var e=c.nodes.get(node);
@@ -341,7 +341,7 @@ async function runOp(tabId, op) {
     }
     case 'select': {
       const res = await evaluate(tabId, `(function(){
-        var c=window.__jevBridge; var node=(c&&c.byId)?c.byId[${JSON.stringify(String(op.ref))}]:null;
+        var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${JSON.stringify(String(op.ref))}]:null;
         var e=node!=null?c.nodes.get(node):null;
         if(!e) return 'unknown ref (observe again)';
         if(e.tagName!=='SELECT') return 'not a dropdown';
@@ -458,6 +458,6 @@ async function handleCommand(cmd, args) {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-chrome.alarms.create('jevbridge-keepalive', { periodInMinutes: 0.4 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'jevbridge-keepalive') connect(); });
+chrome.alarms.create('clawbrowse-keepalive', { periodInMinutes: 0.4 });
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'clawbrowse-keepalive') connect(); });
 connect();
