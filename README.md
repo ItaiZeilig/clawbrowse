@@ -34,32 +34,35 @@ Claude Code ──stdio (MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577
 
 ## Getting started
 
-**You'll need:** Google Chrome (or Edge/Brave), **Node.js ≥ 18**, and **Claude Code** (or any MCP client).
+ClawBrowse has two small parts that work together: the **Chrome extension** (the hands + eyes in
+your browser) and a **local server** that your AI agent runs and talks to. You install the
+extension once, add the server to your agent with one line, and you're set.
 
-### 1. Get the code
+### Easy install (recommended)
+
+1. **Install the extension** from the Chrome Web Store: **ClawBrowse** — *🚧 in review; the link
+   will go here once it's live. Until then, use "From source" below.*
+2. **Add the server to Claude Code** — one line, nothing to clone:
+   ```bash
+   claude mcp add --scope user clawbrowse -- npx -y clawbrowse@latest
+   ```
+3. **Restart Claude Code.** That's it — ask it *"use clawbrowse: what's my browser status?"* and
+   you should see `extension_connected: true`. (The extension badge turns **green ●** when connected.)
+
+> Needs **Node.js ≥ 18** installed (for the one-line server) and **Claude Code** (or any MCP client).
+
+### From source (for contributors, or before the store listing is live)
+
 ```bash
 git clone https://github.com/ItaiZeilig/clawbrowse.git
 ```
-
-### 2. Load the extension into Chrome
-1. Open `chrome://extensions`.
-2. Turn on **Developer mode** (top-right toggle).
-3. Click **Load unpacked** and select the **`clawbrowse/extension`** folder.
-4. You'll see a **ClawBrowse** card with a small badge icon. (It turns **green ●** once it's
-   connected to the server in step 3 — grey until then, that's normal.)
-
-### 3. Connect it to Claude Code
-Register the local server once, using the **full path** to where you cloned it:
-```bash
-claude mcp add --scope user clawbrowse -- node /full/path/to/clawbrowse/mcp/server.mjs
-```
-
-### 4. Restart Claude Code
-**Fully quit and reopen Claude Code** (not just `/mcp`) so it starts the server and loads the
-tools. When it's back, the extension badge should be **green ●**.
-
-> ✅ **Check it's working:** ask Claude Code *"use clawbrowse: what's my browser status?"* — it
-> should report `extension_connected: true`.
+1. **Load the extension:** `chrome://extensions` → **Developer mode** (top-right) → **Load
+   unpacked** → pick the `clawbrowse/extension` folder.
+2. **Register the server** with the full path to your clone:
+   ```bash
+   claude mcp add --scope user clawbrowse -- node /full/path/to/clawbrowse/mcp/server.mjs
+   ```
+3. **Fully restart Claude Code** (not just `/mcp`), then run the status check above.
 
 ## Using it
 
