@@ -133,6 +133,14 @@ const httpServer = http.createServer((req, res) => { res.writeHead(426); res.end
 httpServer.on('upgrade', (req, socket) => {
   const key = req.headers['sec-websocket-key'];
   if (!key) { socket.destroy(); return; }
+  // Only the extension (or local tooling with no browser origin) may connect. A web page
+  // could otherwise open ws://127.0.0.1 and impersonate the extension. Reject web origins.
+  const origin = req.headers.origin || '';
+  if (origin && !origin.startsWith('chrome-extension://')) {
+    log(`rejected WebSocket from disallowed origin: ${origin}`);
+    socket.destroy();
+    return;
+  }
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +

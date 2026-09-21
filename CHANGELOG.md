@@ -26,6 +26,9 @@ Perception + reliability overhaul, adapting techniques from
 
 ### Security
 - `password`, `file`, and `hidden` inputs are excluded and their values are never exposed.
+- The local bridge now **rejects WebSocket connections from web-page origins** (only
+  `chrome-extension://` or origin-less local tooling may connect), so a malicious page can't
+  open `ws://127.0.0.1` and impersonate the extension.
 
 ## [0.1.2] - 2026-09-21
 
