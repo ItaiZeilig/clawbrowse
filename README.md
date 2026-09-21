@@ -80,8 +80,10 @@ Refs (`e12`) stay stable across observations of the same page.
 
 ## Security
 
-The extension holds `debugger` + `<all_urls>` — the power to read and act on any page in your
-profile. That is the same capability class as any real-browser agent; use it deliberately.
+The extension holds the `debugger` permission — the power to read and act on the pages you
+drive via the Chrome DevTools Protocol. It requests no broad host permission (the debugger
+API does not need one for regular tabs). That is the same capability class as any real-browser
+agent; use it deliberately.
 Everything here is auditable: the MCP server is one zero-dependency file (`mcp/server.mjs`),
 the extension is plain JS under `extension/`.
 

@@ -78,9 +78,9 @@ The dashboard asks you to justify each permission. Use these:
   DevTools Protocol (reading page elements, clicking, typing, navigating) as requested by
   the user's local AI agent. The debugger API is the mechanism that performs these actions
   in the user's existing tabs without a separate remote-debugging port."
-- **host permissions (`<all_urls>`)** — "The user directs the agent to operate on arbitrary
-  websites of their choosing, so the extension must be able to read and act on any page the
-  user targets. It only acts on the tab the user is driving, on demand."
+- **host permissions** — Not requested. The extension acts on pages via the `chrome.debugger`
+  API, which does not require host permissions for regular tabs, so no broad host access is
+  declared. (If the dashboard still shows a host-permission field, leave it blank.)
 - **tabs** — "To list open tabs and target the correct tab for an action."
 - **storage** — "To store the local bridge port number the user configures. Stored locally;
   never transmitted."

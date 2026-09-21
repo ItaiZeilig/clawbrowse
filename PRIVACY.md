@@ -42,8 +42,9 @@ does with the page content you send it. JevBridge itself adds no additional dest
 
 ## Permissions
 
-- `debugger`, `<all_urls>` — required to read and act on the pages you choose to drive, via
-  the Chrome DevTools Protocol. Used solely to fulfill your agent's requests.
+- `debugger` — required to read and act on the pages you choose to drive, via the Chrome
+  DevTools Protocol. Used solely to fulfill your agent's requests. (No broad host permission
+  is requested; the debugger API operates on the tab you target.)
 - `tabs` — to list and target tabs.
 - `storage` — to save your bridge-port setting locally.
 - `alarms` — to keep the local connection alive.
