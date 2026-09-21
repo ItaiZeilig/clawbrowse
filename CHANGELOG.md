@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-22
+
+Perception + reliability overhaul, adapting techniques from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT).
+
+### Added
+- Proper **accessible-name resolution** (aria-labelledby → aria-label → `<label>` → alt →
+  text → title) for far better element labels.
+- Native **`checkVisibility`** filtering plus `aria-hidden`/`inert` exclusion.
+- **Viewport-center filtering** — only currently-visible, hit-testable controls are listed.
+- **Hit-testing before every click** (`elementFromPoint` containment) and **geometry
+  re-resolved at action time**, so moving or covered targets never mis-click.
+- Robust **fill** via select-all + `insertText` (works with React/controlled inputs).
+- **Page-changed signal** on `browser_act` results (a "no change" hint when an action had
+  no effect), and **observe retry** through page transitions.
+- `select` matches by value/label/text and only among enabled options.
+- Operational guidance + an untrusted-page-data warning baked into the tool descriptions.
+
+### Security
+- `password`, `file`, and `hidden` inputs are excluded and their values are never exposed.
+
 ## [0.1.2] - 2026-09-21
 
 ### Added

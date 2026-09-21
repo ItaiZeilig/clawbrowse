@@ -1,8 +1,13 @@
 // JevBridge background service worker.
 // Connects to the local jevbridge MCP bridge over WebSocket and drives the user's
 // real tabs via chrome.debugger (CDP) — no remote debug port, no relaunch needed.
+//
+// The element-table perception and action-execution techniques (accessible-name
+// resolution, checkVisibility filtering, viewport-center hit-testing, stable node
+// identity, robust fill) are adapted from browser-use/jev-ultrafast (MIT License).
 
 const DEFAULT_PORT = 10577;
+const IS_MAC = (navigator.userAgent || '').indexOf('Macintosh') >= 0;
 let ws = null;
 let attachedTabId = null;
 let reconnectTimer = null;
@@ -108,80 +113,157 @@ async function resolveTabId(args) {
   return t.id;
 }
 
-/* ------------------------------ Perception -------------------------------- */
+/* ------------------------------ Perception -------------------------------- *
+ * Adapted from browser-use/jev-ultrafast (MIT): accessible-name resolution,
+ * native checkVisibility, viewport-center filtering, stable WeakMap identity,
+ * select-options-as-actions, and in-viewport page text. Each snapshot re-numbers
+ * displayed ids (e1..) but backs them with stable node ids (cache.byId) so an
+ * action re-resolves the exact element it was chosen from.
+ * -------------------------------------------------------------------------- */
 
-const PERCEPTION = `(function(){
-  var seen = window.__jevSeen || (window.__jevSeen = {n:0});
-  function refFor(el){ var r = el.getAttribute('data-jev-ref'); if(!r){ r='e'+(++seen.n); el.setAttribute('data-jev-ref', r); } return r; }
-  function labelFor(el){
-    var aria = el.getAttribute('aria-label'); if(aria) return aria.trim().slice(0,120);
-    var t = (el.innerText||el.textContent||'').trim().replace(/\\s+/g,' ');
-    if(!t){ t = el.value || el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name') || ''; }
-    return (t||'').slice(0,120);
+const SNAPSHOT = `(function(){
+  if(!document.body) return null;
+  var cache = window.__jevBridge || (window.__jevBridge = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
+  function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
+  cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
+  function safe(e){ return ['password','file','hidden'].indexOf(e.type)<0; }
+  function visible(e){ return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); }
+  function name(e,seen){
+    seen=seen||new Set();
+    if(!e||seen.has(e)) return '';
+    seen.add(e);
+    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map(function(id){return name(document.getElementById(id),seen);}).filter(Boolean).join(' ');
+    if(ref) return ref;
+    if(e.getAttribute('aria-label')) return e.getAttribute('aria-label');
+    var labs=[].slice.call(e.labels||[]).map(function(l){return name(l,seen);}).filter(Boolean).join(' ');
+    if(labs) return labs;
+    if(['button','submit','reset'].indexOf(e.type)>=0 && e.value) return e.value;
+    if(e.getAttribute('alt')) return e.getAttribute('alt');
+    var txt = e.tagName==='INPUT' ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : ''); }).join(' ').trim();
+    if(txt) return txt;
+    return e.getAttribute('title')||e.getAttribute('placeholder')||'';
   }
-  function kindOf(el){
-    var tag = el.tagName.toLowerCase();
-    var role = (el.getAttribute('role')||'').toLowerCase();
-    if(tag==='a'||role==='link') return 'lnk';
-    if(tag==='select') return 'sel';
-    if(tag==='textarea') return 'inp';
-    if(tag==='input'){ var ty=(el.type||'text').toLowerCase(); if(ty==='checkbox'||ty==='radio') return 'chk'; if(ty==='hidden') return null; return 'inp'; }
-    if(role==='checkbox'||role==='radio') return 'chk';
-    if(tag==='button'||role==='button'||el.type==='submit'||el.type==='button') return 'btn';
-    if(el.isContentEditable) return 'inp';
-    return 'btn';
+  var roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio','option','gridcell','combobox','textbox','searchbox','spinbutton'];
+  var selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
+  function role(e){
+    var explicit=e.getAttribute('role');
+    if(roles.indexOf(explicit)>=0) return explicit;
+    if(e.tagName==='BUTTON'||e.tagName==='SUMMARY') return 'button';
+    if(e.tagName==='A') return 'link';
+    if(e.tagName==='SELECT') return 'combobox';
+    if(e.tagName==='TEXTAREA'||e.isContentEditable) return 'textbox';
+    if(e.tagName==='INPUT'){
+      if(['checkbox','radio'].indexOf(e.type)>=0) return e.type;
+      if(['button','submit','reset','image'].indexOf(e.type)>=0) return 'button';
+      if(e.type==='search') return 'searchbox';
+      if(e.type==='number') return 'spinbutton';
+      if(['text','email','url','tel'].indexOf(e.type)>=0) return 'textbox';
+    }
+    return null;
   }
-  var sel='a[href],button,input,select,textarea,summary,[role=button],[role=link],[role=checkbox],[role=radio],[role=tab],[role=menuitem],[onclick],[contenteditable=""],[contenteditable=true]';
-  var out=[], nodes=document.querySelectorAll(sel);
+  var actions=[], nodes=document.querySelectorAll(selector);
   for(var i=0;i<nodes.length;i++){
-    var el=nodes[i];
-    var kind=kindOf(el); if(!kind) continue;
-    var rect=el.getBoundingClientRect();
-    if(rect.width<=0||rect.height<=0) continue;
-    var st=getComputedStyle(el);
-    if(st.visibility==='hidden'||st.display==='none'||Number(st.opacity)===0) continue;
-    var inView = rect.bottom>0 && rect.right>0 && rect.top<innerHeight && rect.left<innerWidth;
-    var item={ ref:refFor(el), kind:kind, label:labelFor(el), inView:inView };
-    if(el.disabled) item.disabled=true;
-    if(kind==='inp'||kind==='sel'){ var v=(el.value!=null)?String(el.value):''; if(v) item.value=v.slice(0,80); }
-    if(kind==='chk') item.checked=!!el.checked;
-    if(kind==='sel'){ item.options=Array.prototype.slice.call(el.options||[]).map(function(o){return o.text;}).slice(0,12); }
-    out.push(item);
+    var e=nodes[i];
+    if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
+    var r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
+    if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
+    if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
+    var base={node:identity(e), role:rname, label:(name(e)||rname).replace(/\\s+/g,' ').trim().slice(0,120), x:Math.round(x), y:Math.round(y)};
+    var achecked=e.getAttribute('aria-checked');
+    if(['checkbox','radio'].indexOf(e.type)>=0) base.checked=!!e.checked;
+    else if(achecked!=null) base.checked=(achecked==='true');
+    if(e.tagName==='SELECT'){
+      base.kind='select';
+      base.value=[].map.call(e.selectedOptions,function(o){return o.label;}).join(', ');
+      base.options=[].filter.call(e.options,function(o){return !o.disabled;}).map(function(o){return o.label;}).slice(0,15);
+      actions.push(base);
+    } else {
+      var editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' && (['textbox','searchbox','spinbutton'].indexOf(rname)>=0 || (rname==='combobox' && ['INPUT','TEXTAREA'].indexOf(e.tagName)>=0));
+      var value = ('value' in e) ? String(e.value) : ((e.isContentEditable||rname==='combobox') ? e.innerText.trim() : '');
+      if(value) base.value=value.slice(0,80);
+      base.kind=editable?'fill':'click';
+      actions.push(base);
+    }
   }
-  return { url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), viewportH:Math.round(innerHeight), count:out.length, elements:out };
+  var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
+  while((node=walker.nextNode()) && length<4000){
+    var v=node.textContent.trim(), p=node.parentElement;
+    if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
+    range.selectNodeContents(node); var tr=range.getBoundingClientRect();
+    if(tr.width>0&&tr.height>0&&tr.bottom>0&&tr.top<innerHeight&&tr.right>0&&tr.left<innerWidth){ words.push(v); length+=v.length; }
+  }
+  var text=words.join('\\n').slice(0,4000);
+  var omitted=Math.max(0, actions.length-250); actions.splice(250);
+  cache.byId={}; for(var j=0;j<actions.length;j++){ actions[j].id='e'+(j+1); cache.byId[actions[j].id]=actions[j].node; }
+  return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), text:text, omitted:omitted, actions:actions};
 })()`;
 
 function formatTable(snap) {
+  if (!snap) return '(page not ready)';
   const lines = [];
   lines.push(`${snap.title || '(untitled)'}  —  ${snap.url}`);
-  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.count} controls`);
-  for (const e of snap.elements) {
+  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.actions.length} controls${snap.omitted ? ` (+${snap.omitted} more; scroll to reveal)` : ''}`);
+  for (const a of snap.actions) {
     let flag = ' ';
-    if (e.kind === 'chk') flag = e.checked ? '✓' : '·';
-    if (e.disabled) flag = '⊘';
-    let line = `${e.ref.padEnd(4)} ${e.kind}${flag} "${e.label}"`;
-    if (e.value) line += `  ▸ "${e.value}"`;
-    if (e.options && e.options.length) line += `  opts{${e.options.join(' | ')}}`;
-    if (!e.inView) line += `  (off-screen)`;
+    if (a.kind === 'select') flag = '▾';
+    else if (typeof a.checked === 'boolean') flag = a.checked ? '✓' : '·';
+    let line = `${a.id.padEnd(4)} ${a.kind.padEnd(6)}${flag} "${a.label}"`;
+    if (a.value && a.kind !== 'select') line += `  ▸ "${a.value}"`;
+    if (a.kind === 'select') {
+      if (a.value) line += `  ▸ "${a.value}"`;
+      if (a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
+    }
     lines.push(line);
   }
   return lines.join('\n');
 }
 
+// A cheap page signature to detect whether an action actually changed the page.
+const SIG = `JSON.stringify([location.href, document.title, (document.body?document.body.innerText.length:0), document.querySelectorAll('a,button,input,select,textarea,summary,[role]').length])`;
+
+// Retry through transient "document is navigating" states so a snapshot taken
+// during a transition settles instead of failing.
+async function snapshot(tabId) {
+  let last;
+  for (let i = 0; i < 8; i++) {
+    try {
+      const snap = await evaluate(tabId, SNAPSHOT);
+      if (snap) return snap;
+    } catch (e) { last = e; }
+    await sleep(120);
+  }
+  if (last) throw last;
+  return null;
+}
+
 async function observe(tabId) {
-  const snap = await evaluate(tabId, PERCEPTION);
-  return formatTable(snap);
+  return formatTable(await snapshot(tabId));
 }
 
 /* -------------------------------- Actions --------------------------------- */
 
-async function centerOf(tabId, ref) {
-  return evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${ref}"]'); if(!el) return null; el.scrollIntoView({block:'center',inline:'center'}); var r=el.getBoundingClientRect(); return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};})()`);
+// Re-resolve a ref to its live element, re-check it, and hit-test the center
+// (elementFromPoint containment) so we never click a stale/covered/wrong target.
+async function resolveHit(tabId, ref) {
+  return evaluate(tabId, `(function(){
+    var c=window.__jevBridge; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
+    var node=c.byId[${JSON.stringify(String(ref))}];
+    if(node==null) return {error:'unknown ref (observe again)'};
+    var e=c.nodes.get(node);
+    if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
+    if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
+    if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {error:'element not visible'};
+    e.scrollIntoView({block:'center',inline:'center'});
+    var r=e.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
+    var x=Math.round(r.x+r.width/2), y=Math.round(r.y+r.height/2);
+    if(x<0||y<0||x>=innerWidth||y>=innerHeight) return {error:'element off-screen after scroll'};
+    if(!e.contains(document.elementFromPoint(x,y))) return {error:'element is covered by another element'};
+    return {x:x, y:y};
+  })()`);
 }
 
-// Find the most specific (smallest) visible element whose text matches, scroll it into
-// view, and return its center. For widgets whose options aren't standard controls
-// (custom dropdowns, flair pickers, menus) that the element table can't reference.
+// Click the most specific visible element matching text, for custom widgets/menus
+// (dropdowns, flair pickers) whose options aren't standard controls in the table.
 async function centerOfText(tabId, text) {
   return evaluate(tabId, `(function(){
     var target=${JSON.stringify(String(text))}.trim().toLowerCase();
@@ -190,15 +272,12 @@ async function centerOfText(tabId, text) {
     var exact=[], partial=[];
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];
-      if(el.querySelector && el.querySelector('a,button,li,input,textarea,select')) { /* prefer leaf-ish, but still allow */ }
       var r=el.getBoundingClientRect();
       if(r.width<=0||r.height<=0) continue;
-      var st=getComputedStyle(el);
-      if(st.visibility==='hidden'||st.display==='none'||Number(st.opacity)===0) continue;
+      if(!el.checkVisibility||!el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) continue;
       var txt=(el.innerText||el.textContent||'').trim();
       if(!txt) continue;
-      var low=txt.toLowerCase();
-      var area=r.width*r.height;
+      var low=txt.toLowerCase(), area=r.width*r.height;
       if(low===target) exact.push({el:el,area:area});
       else if(low.indexOf(target)>=0) partial.push({el:el,area:area});
     }
@@ -210,6 +289,19 @@ async function centerOfText(tabId, text) {
     var rr=chosen.getBoundingClientRect();
     return {x:Math.round(rr.left+rr.width/2), y:Math.round(rr.top+rr.height/2)};
   })()`);
+}
+
+async function clickAt(tabId, x, y) {
+  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
+
+// Wait for the page to settle: two animation frames, or up to ms, whichever first.
+async function settle(tabId, ms) {
+  try {
+    await evaluate(tabId, `new Promise(function(res){var f=0;function step(){if(++f>=2)return res(1);requestAnimationFrame(step);}requestAnimationFrame(step);setTimeout(function(){res(1);}, ${Number(ms) || 300});})`);
+  } catch { await sleep(Number(ms) || 300); }
 }
 
 const KEYMAP = {
@@ -226,31 +318,40 @@ const KEYMAP = {
 async function runOp(tabId, op) {
   switch (op.op) {
     case 'click': {
-      const c = await centerOf(tabId, op.ref);
-      if (!c) return `${op.ref}: not found`;
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: 1 });
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1 });
+      const r = await resolveHit(tabId, op.ref);
+      if (r.error) return `${op.ref}: ${r.error}`;
+      await clickAt(tabId, r.x, r.y);
       return `click ${op.ref}`;
     }
     case 'click_text': {
       const c = await centerOfText(tabId, op.text);
       if (!c) return `click_text "${op.text}": not found`;
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: 1 });
-      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1 });
+      await clickAt(tabId, c.x, c.y);
       return `click_text "${op.text}"`;
     }
     case 'type': {
-      const ok = await evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${op.ref}"]'); if(!el) return false; el.focus(); if('value' in el){el.value='';} return true;})()`);
-      if (!ok) return `${op.ref}: not found`;
+      const r = await resolveHit(tabId, op.ref);
+      if (r.error) return `${op.ref}: ${r.error}`;
+      await clickAt(tabId, r.x, r.y); // focus the field with a trusted click
+      // Select-all then insert — robust for React/controlled inputs.
+      await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2, commands: ['selectAll'] });
+      await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2 });
       await sendCdp(tabId, 'Input.insertText', { text: String(op.text ?? '') });
-      await evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${op.ref}"]'); if(el){el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));}})()`);
       return `type ${op.ref}`;
     }
     case 'select': {
-      const matched = await evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${op.ref}"]'); if(!el) return null; var val=${JSON.stringify(String(op.value ?? ''))}; var m=false; for(var i=0;i<el.options.length;i++){var o=el.options[i]; if(o.value===val||o.text===val){el.selectedIndex=i;m=true;break;}} el.dispatchEvent(new Event('change',{bubbles:true})); return m;})()`);
-      return matched === null ? `${op.ref}: not found` : (matched ? `select ${op.ref}` : `${op.ref}: option "${op.value}" not found`);
+      const res = await evaluate(tabId, `(function(){
+        var c=window.__jevBridge; var node=(c&&c.byId)?c.byId[${JSON.stringify(String(op.ref))}]:null;
+        var e=node!=null?c.nodes.get(node):null;
+        if(!e) return 'unknown ref (observe again)';
+        if(e.tagName!=='SELECT') return 'not a dropdown';
+        var val=${JSON.stringify(String(op.value ?? ''))}, m=false;
+        for(var i=0;i<e.options.length;i++){var o=e.options[i]; if(!o.disabled && (o.value===val||o.label===val||o.text===val)){e.selectedIndex=i;m=true;break;}}
+        if(!m) return 'option not found';
+        e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));
+        return 'ok';
+      })()`);
+      return res === 'ok' ? `select ${op.ref}` : `${op.ref}: ${res}`;
     }
     case 'key': {
       const k = KEYMAP[op.key];
@@ -299,7 +400,7 @@ async function handleCommand(cmd, args) {
         const rs = await evaluate(tabId, 'document.readyState').catch(() => null);
         if (rs === 'complete') break;
       }
-      await sleep(300);
+      await settle(tabId, 400);
       return observe(tabId);
     }
     case 'observe': {
@@ -317,14 +418,19 @@ async function handleCommand(cmd, args) {
     case 'act': {
       const tabId = await resolveTabId(args);
       await attach(tabId);
+      const before = await evaluate(tabId, SIG).catch(() => null);
       const logLines = [];
       for (const op of (args.ops || [])) {
         try { logLines.push('  ' + await runOp(tabId, op)); }
         catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
+        await settle(tabId, 250);
       }
-      await sleep(350); // let the page settle
+      await settle(tabId, 450);
+      const after = await evaluate(tabId, SIG).catch(() => null);
+      const changed = before == null || after == null || before !== after;
+      const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
       const table = await observe(tabId);
-      return `ran ${(args.ops || []).length} op(s):\n${logLines.join('\n')}\n\n${table}`;
+      return `ran ${(args.ops || []).length} op(s) [${note}]:\n${logLines.join('\n')}\n\n${table}`;
     }
     case 'assert': {
       const tabId = await resolveTabId(args);
@@ -338,8 +444,8 @@ async function handleCommand(cmd, args) {
         return { pass: String(u).indexOf(args.url_includes) >= 0, kind: 'url_includes', url: u };
       }
       if (args.ref_visible != null) {
-        const c = await centerOf(tabId, args.ref_visible);
-        return { pass: !!c, kind: 'ref_visible', ref: args.ref_visible };
+        const r = await resolveHit(tabId, args.ref_visible);
+        return { pass: !r.error, kind: 'ref_visible', ref: args.ref_visible, note: r.error };
       }
       return { pass: false, error: 'provide one of: contains, url_includes, ref_visible' };
     }

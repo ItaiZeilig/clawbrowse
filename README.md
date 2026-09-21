@@ -68,9 +68,11 @@ Claude Code ──stdio(MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577�
 the element table can't reference), `{op:"type",ref:"e7",text:"..."}`, `{op:"select",ref:"e8",value:"..."}`,
 `{op:"key",key:"Enter"}`, `{op:"scroll",dy:600}`, `{op:"wait",ms:500}`.
 
-**Element table line:** `e12 btn "Sign in"` · `e7 inp "Email" ▸ "current value"` ·
-`e9 chk✓ "Remember me"` · `⊘` = disabled · `(off-screen)` = outside the viewport.
-Refs (`e12`) stay stable across observations of the same page.
+**Element table line:** `e12 click "Sign in"` · `e7 fill "Email" ▸ "current value"` ·
+`e9 click✓ "Remember me"` (`✓`/`·` = checked state) · `e3 select▾ "Country" opts{US | UK}`.
+`kind` is `click`, `fill`, or `select`. Only currently-visible controls are listed (scroll to
+reveal more); every listed control is hit-testable at its center. Refs (`e12`) are valid until
+the next observation of that page.
 
 ## Notes & limits
 
@@ -103,6 +105,14 @@ a public issue for vulnerabilities — see **[SECURITY.md](SECURITY.md)** for pr
 ## Support
 
 Questions or trouble? See **[SUPPORT.md](SUPPORT.md)**.
+
+## Credits
+
+JevBridge's element-table perception and action-execution techniques — accessible-name
+resolution, `checkVisibility` filtering, viewport-center hit-testing, stable node identity,
+and robust fill — are adapted from [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast)
+(MIT License). JevBridge is an independent reimplementation as a Chrome extension + MCP
+server, with the calling agent (not a separate model) as the decision-maker.
 
 ## License
 
