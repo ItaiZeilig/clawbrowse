@@ -150,7 +150,7 @@ Perception + reliability overhaul, adapting techniques from
   `browser_act`, `browser_assert`.
 - Chrome MV3 extension that drives the user's real, logged-in tabs via `chrome.debugger`
   (CDP) — no remote-debug port and no browser relaunch required.
-- jev-style **element-table** perception: pages are read as numbered, stable-ref controls
+- **Element-table** perception: pages are read as numbered, stable-ref controls
   instead of screenshots.
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.

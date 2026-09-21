@@ -94,7 +94,7 @@ same agent (Claude):
 | | Claude-in-Chrome | jev-ultrafast | **ClawBrowse** |
 | --- | --- | --- | --- |
 | Drives your real, logged-in Chrome | ✅ | ❌ (own browser / debug port) | ✅ (`chrome.debugger`, no port) |
-| Decision model | Claude | jev's model (**paid, per click**) | **Claude — no second model, no key** |
+| Decision model | Claude | jev-ultrafast's model (**paid, per click**) | **Claude — no second model, no key** |
 | Perception | screenshots + a11y tree | element table | **element table** |
 | Round trips per action | 2 (perceive → act) | 1 | **1** (stable refs) |
 | Page data to a third party | no | **yes** (to the model API) | **no** |

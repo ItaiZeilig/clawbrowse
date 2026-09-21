@@ -12,7 +12,7 @@
   "bugs": { "url": "https://github.com/ItaiZeilig/clawbrowse/issues" },
   "homepage": "https://github.com/ItaiZeilig/clawbrowse#readme",
   "author": "Itai Zeilig",
-  "keywords": ["mcp", "claude", "browser-automation", "chrome-extension", "jev", "cdp"],
+  "keywords": ["mcp", "claude", "claude-code", "browser-automation", "chrome-extension", "cdp"],
   "license": "MIT",
   "engines": { "node": ">=18" },
   "files": ["mcp/", "extension/", "README.md", "LICENSE"]
