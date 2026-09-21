@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-21
+
+### Added
+- `browser_read` tool: returns a tab's readable text (prose/articles), for pages where the
+  element table isn't enough.
+
+### Changed
+- Removed the `<all_urls>` host permission — `chrome.debugger` does not require it for regular
+  tabs, which avoids the Chrome Web Store "broad host permissions" review delay.
+
+### Fixed
+- MCP server exits when the client closes the stdio pipe and fails loudly on a busy port, so
+  it can no longer linger as a zombie holding the bridge port.
+
 ## [0.1.0] - 2026-09-20
 
 ### Added

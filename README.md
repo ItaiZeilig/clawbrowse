@@ -59,6 +59,7 @@ Claude Code ──stdio(MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577�
 - `browser_tabs` — list open tabs (`id`, `title`, `url`, `active`).
 - `browser_navigate` — `{ url, tabId? }` → element table after load.
 - `browser_observe` — `{ tabId? }` → the element table.
+- `browser_read` — `{ tabId?, max_chars? }` → the page's readable text (prose/articles).
 - `browser_act` — `{ ops: [...], tabId? }` → runs ops, returns a fresh table.
 - `browser_assert` — `{ contains? | url_includes? | ref_visible?, tabId? }` → pass/fail.
 

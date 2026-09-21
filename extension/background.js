@@ -266,6 +266,13 @@ async function handleCommand(cmd, args) {
       await attach(tabId);
       return observe(tabId);
     }
+    case 'read': {
+      const tabId = await resolveTabId(args);
+      await attach(tabId);
+      const max = Math.min(Number(args.max_chars) || 12000, 50000);
+      const text = await evaluate(tabId, `(function(){var el=document.querySelector('main')||document.body;var t=(el.innerText||'').replace(/\\n{3,}/g,'\\n\\n');return t.slice(0, ${max});})()`);
+      return `${await evaluate(tabId, 'document.title')}  —  ${await evaluate(tabId, 'location.href')}\n\n${text}`;
+    }
     case 'act': {
       const tabId = await resolveTabId(args);
       await attach(tabId);

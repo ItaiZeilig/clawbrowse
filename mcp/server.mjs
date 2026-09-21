@@ -182,6 +182,11 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { tabId: { type: 'number' } } },
   },
   {
+    name: 'browser_read',
+    description: 'Read the target tab as plain readable text (article/prose content), for pages where you need the text itself — rules, docs, articles — rather than the element table.',
+    inputSchema: { type: 'object', properties: { tabId: { type: 'number' }, max_chars: { type: 'number' } } },
+  },
+  {
     name: 'browser_act',
     description: 'Run a list of operations on the target tab in order, then return the fresh element table. ops: [{op:"click",ref:"e12"} | {op:"type",ref:"e7",text:"..."} | {op:"select",ref:"e8",value:"..."} | {op:"key",key:"Enter"} | {op:"scroll",dy:600} | {op:"wait",ms:500}].',
     inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, tabId: { type: 'number' } }, required: ['ops'] },
@@ -209,6 +214,7 @@ async function callTool(name, args) {
     case 'browser_tabs':    return textResult(await callExtension('tabs', {}));
     case 'browser_navigate':return textResult(await callExtension('navigate', args));
     case 'browser_observe': return textResult(await callExtension('observe', args));
+    case 'browser_read':    return textResult(await callExtension('read', args));
     case 'browser_act':     return textResult(await callExtension('act', args));
     case 'browser_assert':  return textResult(await callExtension('assert', args));
     default: throw new Error(`unknown tool: ${name}`);
