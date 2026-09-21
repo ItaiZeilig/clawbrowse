@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ClawBrowse",
+  "name": "PawBrowse",
   "version": "0.3.3",
   "description": "Let your AI agent (Claude Code) drive your real Chrome. Fast element-table control. Open source, no keys.",
   "minimum_chrome_version": "120",
@@ -14,7 +14,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "ClawBrowse",
+    "default_title": "PawBrowse",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",

@@ -1,5 +1,5 @@
-// ClawBrowse background service worker.
-// Connects to the local clawbrowse MCP bridge over WebSocket and drives the user's
+// PawBrowse background service worker.
+// Connects to the local pawbrowse MCP bridge over WebSocket and drives the user's
 // real tabs via chrome.debugger (CDP) — no remote debug port, no relaunch needed.
 //
 // The element-table perception and action-execution techniques (accessible-name
@@ -139,7 +139,7 @@ async function resolveTabId(args) {
 const SNAPSHOT = `(function(){
   try{
   if(!document.body) return null;
-  var cache = window.__clawbrowse || (window.__clawbrowse = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
+  var cache = window.__pawbrowse || (window.__pawbrowse = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
   function safe(e){ return ['password','file','hidden'].indexOf(e.type)<0; }
@@ -280,7 +280,7 @@ async function resolveHit(tabId, ref, opts) {
   const forFill = opts && opts.fill ? 'true' : 'false';
   const R = JSON.stringify(String(ref));
   return evaluate(tabId, `(function(){
-    var c=window.__clawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
+    var c=window.__pawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
     var node=c.byId[${R}];
     if(node==null) return {error:'unknown ref (observe again)'};
     var e=c.nodes.get(node);
@@ -356,7 +356,7 @@ async function waitForOptions(tabId, ref, ms) {
     await evaluate(tabId, `new Promise(function(res){
       var done=false; function fin(){ if(done) return; done=true; try{clearInterval(iv);}catch(_){} res(1); }
       setTimeout(fin, ${cap});
-      var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null; var e=node!=null?c.nodes.get(node):null;
+      var c=window.__pawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null; var e=node!=null?c.nodes.get(node):null;
       if(!e || (e.getAttribute('role')||'').toLowerCase()!=='combobox'){ return fin(); }
       var ids=(e.getAttribute('aria-controls')||e.getAttribute('aria-owns')||'').split(/\\s+/).filter(Boolean);
       var iv=setInterval(function(){
@@ -412,7 +412,7 @@ async function runOp(tabId, op) {
       const V = JSON.stringify(String(op.value ?? ''));
       try {
         const res = await evaluate(tabId, `(function(){
-          var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null;
+          var c=window.__pawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null;
           var e=node!=null?c.nodes.get(node):null;
           if(!e||!e.isConnected) return 'unknown ref (observe again)';
           if(e.tagName!=='SELECT') return 'not a dropdown';
@@ -546,8 +546,8 @@ async function handleCommand(cmd, args) {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-chrome.alarms.create('clawbrowse-keepalive', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'clawbrowse-keepalive') connect(); });
+chrome.alarms.create('pawbrowse-keepalive', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'pawbrowse-keepalive') connect(); });
 // Let the options page read live connection status without opening a competing socket
 // (which the bridge's single-connection guard would reject).
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {

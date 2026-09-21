@@ -58,7 +58,7 @@ Hardening from a second multi-agent review (bug-hunt on the v0.3.0 code itself).
 
 ## [0.3.0] - 2026-09-22
 
-Renamed **JevBridge → ClawBrowse**, plus a second, deeper multi-agent audit that closes the
+Renamed **JevBridge → PawBrowse**, plus a second, deeper multi-agent audit that closes the
 remaining correctness, robustness, and hardening gaps.
 
 ### Added
@@ -153,12 +153,12 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.3...HEAD
-[0.3.3]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.3
-[0.3.2]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.2
-[0.3.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.1
-[0.3.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.0
-[0.2.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.2.0
-[0.1.2]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.2
-[0.1.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.1
-[0.1.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.0
+[Unreleased]: https://github.com/ItaiZeilig/pawbrowse/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.3
+[0.3.2]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.2
+[0.3.1]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.1
+[0.3.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.0
+[0.2.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.2.0
+[0.1.2]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.1.2
+[0.1.1]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.1.1
+[0.1.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.1.0

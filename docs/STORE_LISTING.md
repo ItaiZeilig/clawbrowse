@@ -1,13 +1,13 @@
-# Chrome Web Store listing — ClawBrowse
+# Chrome Web Store listing — PawBrowse
 
 Copy-paste content and a step-by-step for submitting the extension. Assets are in
-`assets/store/`, the upload package is `dist/clawbrowse-extension-v0.3.1.zip`.
+`assets/store/`, the upload package is `dist/pawbrowse-extension-v0.3.1.zip`.
 
 ---
 
 ## Product name
 ```
-ClawBrowse
+PawBrowse
 ```
 
 ## Summary (max 132 chars)
@@ -23,23 +23,23 @@ Let your local AI coding agent (Claude Code) drive your real Chrome tabs. Fast e
 
 ## Detailed description
 ```
-ClawBrowse connects your local AI coding agent — such as Claude Code — to your real,
+PawBrowse connects your local AI coding agent — such as Claude Code — to your real,
 logged-in Chrome so it can read and act on web pages the way you would.
 
-Instead of screenshots, ClawBrowse reads each page as a compact, numbered element table
+Instead of screenshots, PawBrowse reads each page as a compact, numbered element table
 (e12 "Sign in", e7 "Email", ...), so your agent can click, type, select, navigate and
 verify quickly and reliably.
 
-The agent is the policy. ClawBrowse does not run its own AI model and requires no API key.
+The agent is the policy. PawBrowse does not run its own AI model and requires no API key.
 It talks only to a local bridge on your own machine (127.0.0.1). Page content is passed to
 the agent you are running and is never sent to the developer or any third-party server.
 
 WHAT YOU NEED
-- The open-source ClawBrowse MCP server running locally (Node.js). See the project page.
+- The open-source PawBrowse MCP server running locally (Node.js). See the project page.
 - An MCP client such as Claude Code.
 
 HOW IT WORKS
-1. Run the ClawBrowse MCP server (your AI client launches it).
+1. Run the PawBrowse MCP server (your AI client launches it).
 2. This extension connects to it over a local WebSocket (127.0.0.1).
 3. Your agent calls tools: observe (element table), act (click/type/select/scroll),
    navigate, and assert.
@@ -51,21 +51,21 @@ FEATURES
 - No external model, no API keys, no telemetry.
 - Fully open source (MIT).
 
-Source, docs and issues: https://github.com/ItaiZeilig/clawbrowse
-Privacy policy: https://github.com/ItaiZeilig/clawbrowse/blob/main/PRIVACY.md
+Source, docs and issues: https://github.com/ItaiZeilig/pawbrowse
+Privacy policy: https://github.com/ItaiZeilig/pawbrowse/blob/main/PRIVACY.md
 
-ClawBrowse is an independent open-source project and is not affiliated with or endorsed by
+PawBrowse is an independent open-source project and is not affiliated with or endorsed by
 Google or Anthropic.
 ```
 
 ## Privacy policy URL
 ```
-https://github.com/ItaiZeilig/clawbrowse/blob/main/PRIVACY.md
+https://github.com/ItaiZeilig/pawbrowse/blob/main/PRIVACY.md
 ```
 
 ## Homepage / support URL
 ```
-https://github.com/ItaiZeilig/clawbrowse
+https://github.com/ItaiZeilig/pawbrowse
 ```
 
 ---
@@ -106,7 +106,7 @@ The dashboard asks you to justify each permission. Use these:
 | Marquee promo | 1400×560 | `promo-marquee-1400x560.png` | optional |
 
 > The generated screenshot is a brand image. For a stronger listing, add a real screenshot
-> (1280×800) of Claude Code using ClawBrowse — e.g. an element table being read and an action
+> (1280×800) of Claude Code using PawBrowse — e.g. an element table being read and an action
 > run. Up to 5 screenshots are allowed.
 
 ---
@@ -117,7 +117,7 @@ The dashboard asks you to justify each permission. Use these:
 2. Go to the **Chrome Web Store Developer Dashboard**
    (https://chrome.google.com/webstore/devconsole), sign in, pay the **one-time US$5**
    registration fee, verify your contact email, and accept the developer agreement.
-3. Click **Add new item** → upload `dist/clawbrowse-extension-v0.3.1.zip`.
+3. Click **Add new item** → upload `dist/pawbrowse-extension-v0.3.1.zip`.
 4. Fill the **Store listing** tab with the name, summary, description, category, and URLs
    above; upload the icon, screenshot, and promo tiles from `assets/store/`.
 5. Fill the **Privacy practices** tab: single purpose, the permission justifications above,
@@ -130,5 +130,5 @@ The dashboard asks you to justify each permission. Use these:
 
 ## Note on the published extension ID
 When published, Google assigns a new extension ID (different from the unpacked dev ID). The
-ClawBrowse MCP server does not pin a specific extension ID, so nothing needs to change after
+PawBrowse MCP server does not pin a specific extension ID, so nothing needs to change after
 publishing.

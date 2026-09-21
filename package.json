@@ -1,16 +1,16 @@
 {
-  "name": "clawbrowse",
+  "name": "pawbrowse",
   "version": "0.3.3",
   "description": "Let Claude Code drive your real, logged-in Chrome. A zero-dependency MCP server + a Chrome MV3 extension that uses element-table perception over CDP. The calling agent is the policy: no second model, no API keys, page snapshots never leave for a third party.",
   "type": "module",
-  "bin": { "clawbrowse": "mcp/server.mjs" },
+  "bin": { "pawbrowse": "mcp/server.mjs" },
   "scripts": {
     "start": "node mcp/server.mjs",
     "test": "node test/bridge.test.mjs"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/ItaiZeilig/clawbrowse.git" },
-  "bugs": { "url": "https://github.com/ItaiZeilig/clawbrowse/issues" },
-  "homepage": "https://github.com/ItaiZeilig/clawbrowse#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/ItaiZeilig/pawbrowse.git" },
+  "bugs": { "url": "https://github.com/ItaiZeilig/pawbrowse/issues" },
+  "homepage": "https://github.com/ItaiZeilig/pawbrowse#readme",
   "author": "Itai Zeilig",
   "keywords": ["mcp", "claude", "claude-code", "browser-automation", "chrome-extension", "cdp"],
   "license": "MIT",

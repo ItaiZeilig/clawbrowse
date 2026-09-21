@@ -1,9 +1,9 @@
 <p align="center">
-  <img src="assets/hero.png" alt="ClawBrowse — Claude Code drives your real Chrome" width="100%">
+  <img src="assets/hero.png" alt="PawBrowse — Claude Code drives your real Chrome" width="100%">
 </p>
 
 <h1 align="center">
-  <img src="extension/icons/icon-48.png" width="28" align="top" alt=""> ClawBrowse
+  <img src="extension/icons/icon-48.png" width="28" align="top" alt=""> PawBrowse
 </h1>
 
 <p align="center"><strong>Let Claude Code drive your real, logged-in Chrome — open source, no keys, no second model.</strong></p>
@@ -17,7 +17,7 @@
 <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-blue.svg" alt="MCP"></a>
 </p>
 
-ClawBrowse is a **Chrome MV3 extension + a tiny zero-dependency MCP server** that lets your local
+PawBrowse is a **Chrome MV3 extension + a tiny zero-dependency MCP server** that lets your local
 AI coding agent (like **Claude Code**) read and act on your **actual, logged-in browser tabs** —
 your profile, your sessions, your open pages — with **no remote-debug port, no browser relaunch,
 and no separate AI model or API key.**
@@ -34,19 +34,19 @@ Claude Code ──stdio (MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577
 
 ## Getting started
 
-ClawBrowse has two small parts that work together: the **Chrome extension** (the hands + eyes in
+PawBrowse has two small parts that work together: the **Chrome extension** (the hands + eyes in
 your browser) and a **local server** that your AI agent runs and talks to. You install the
 extension once, add the server to your agent with one line, and you're set.
 
 ### Easy install (recommended)
 
-1. **Install the extension** from the Chrome Web Store: **ClawBrowse** — *🚧 in review; the link
+1. **Install the extension** from the Chrome Web Store: **PawBrowse** — *🚧 in review; the link
    will go here once it's live. Until then, use "From source" below.*
 2. **Add the server to Claude Code** — one line, nothing to clone:
    ```bash
-   claude mcp add --scope user clawbrowse -- npx -y clawbrowse@latest
+   claude mcp add --scope user pawbrowse -- npx -y pawbrowse@latest
    ```
-3. **Restart Claude Code.** That's it — ask it *"use clawbrowse: what's my browser status?"* and
+3. **Restart Claude Code.** That's it — ask it *"use pawbrowse: what's my browser status?"* and
    you should see `extension_connected: true`. (The extension badge turns **green ●** when connected.)
 
 > Needs **Node.js ≥ 18** installed (for the one-line server) and **Claude Code** (or any MCP client).
@@ -54,20 +54,20 @@ extension once, add the server to your agent with one line, and you're set.
 ### From source (for contributors, or before the store listing is live)
 
 ```bash
-git clone https://github.com/ItaiZeilig/clawbrowse.git
+git clone https://github.com/ItaiZeilig/pawbrowse.git
 ```
 1. **Load the extension:** `chrome://extensions` → **Developer mode** (top-right) → **Load
-   unpacked** → pick the `clawbrowse/extension` folder.
+   unpacked** → pick the `pawbrowse/extension` folder.
 2. **Register the server** with the full path to your clone:
    ```bash
-   claude mcp add --scope user clawbrowse -- node /full/path/to/clawbrowse/mcp/server.mjs
+   claude mcp add --scope user pawbrowse -- node /full/path/to/pawbrowse/mcp/server.mjs
    ```
 3. **Fully restart Claude Code** (not just `/mcp`), then run the status check above.
 
 ## Using it
 
 You don't call the tools yourself — you just **ask Claude Code in plain language**, and it uses
-ClawBrowse to drive whatever tab you point it at. Some things to try:
+PawBrowse to drive whatever tab you point it at. Some things to try:
 
 - *"Open news.ycombinator.com and give me the top 5 story titles."*
 - *"On this tab, search for 'open source license' and open the first result."*
@@ -87,7 +87,7 @@ Tips:
 | "No extension connected" | Reload the extension at `chrome://extensions`, then re-run `browser_status`. |
 | "Another debugger is already attached" | That tab has DevTools open or another extension driving it — close DevTools or switch tabs. |
 | A `chrome://` / Web Store page won't drive | Those are browser pages Chrome blocks from automation — use a normal web page. |
-| Changed the port | Set the same port in the extension's **Options** and in `--env CLAWBROWSE_PORT=…`. |
+| Changed the port | Set the same port in the extension's **Options** and in `--env PAWBROWSE_PORT=…`. |
 
 > Requires **Node ≥ 18** (≥ 22 to run the test suite). Works on Chrome, Edge, and Brave.
 
@@ -109,7 +109,7 @@ Tips:
 
 ## Benchmark
 
-Because ClawBrowse keeps **stable element refs** and its `navigate`/`act` already return the fresh
+Because PawBrowse keeps **stable element refs** and its `navigate`/`act` already return the fresh
 table, the agent clicks a known target in **one** round trip. Screenshot/accessibility-tree drivers
 do **perceive-then-act** — a read (or screenshot) *then* a click — paying an extra agent round trip
 and a larger payload every action.
@@ -117,7 +117,7 @@ and a larger payload every action.
 Measured task: click 5 different section links on the same Wikipedia page, averaged, same machine,
 same agent (Claude):
 
-| | ClawBrowse | Claude-in-Chrome |
+| | PawBrowse | Claude-in-Chrome |
 | --- | --- | --- |
 | Calls per click | **1** (`act` by stable ref) | 2 (`read_page` → click) |
 | Avg wall-clock per click | **~7.6 s** | ~17.0 s |
@@ -126,12 +126,12 @@ same agent (Claude):
 > **Honest caveat:** with Claude as the shared brain, absolute wall-clock is dominated by agent
 > latency and is noisy — treat the **~2.2× ratio** as the signal, not the exact seconds. The win is
 > *structural* (fewer round trips + smaller payloads), which also means fewer tokens per step. It's
-> **not** the sub-second speed of a small, dedicated click-picking model — ClawBrowse trades that
+> **not** the sub-second speed of a small, dedicated click-picking model — PawBrowse trades that
 > raw speed for a smart, general brain (Claude) with no keys and no per-click cost.
 
 ## How it compares
 
-| | Claude-in-Chrome | **ClawBrowse** |
+| | Claude-in-Chrome | **PawBrowse** |
 | --- | --- | --- |
 | Drives your real, logged-in Chrome | ✅ | ✅ (`chrome.debugger`, no port) |
 | Decision model | Claude | **Claude — no second model, no key** |
@@ -180,7 +180,7 @@ widgets/menus not in the table) · `{op:"type",ref:"e7",text:"..."}` · `{op:"se
 
 ## Reliability & safety engineering
 
-ClawBrowse was hardened through two multi-agent code audits **and** live testing on real sites:
+PawBrowse was hardened through two multi-agent code audits **and** live testing on real sites:
 
 - **Hit-tested clicks.** Before every click it re-resolves the element live and verifies the center
   isn't covered (`elementFromPoint`), so it never clicks a stale, moved, or occluded target.
@@ -213,7 +213,7 @@ Found a vulnerability? See **[SECURITY.md](SECURITY.md)** — please don't open 
 
 ## Notes & limits
 
-- Attaching shows Chrome's "ClawBrowse is debugging this browser" banner — expected.
+- Attaching shows Chrome's "PawBrowse is debugging this browser" banner — expected.
 - One debugger client per tab: a tab with DevTools open (or driven by another extension) can't be
   attached — switch tabs or close DevTools.
 - `chrome://`, the Chrome Web Store, and other browser pages can't be driven.
@@ -234,4 +234,4 @@ as required by that project's license.
 
 ## License
 
-[MIT](LICENSE) © ClawBrowse contributors.
+[MIT](LICENSE) © PawBrowse contributors.

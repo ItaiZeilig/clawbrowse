@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// clawbrowse MCP server — zero-dependency.
+// pawbrowse MCP server — zero-dependency.
 //
 // Two faces:
 //   1. An MCP server over stdio (newline-delimited JSON-RPC 2.0) that Claude Code talks to.
@@ -12,13 +12,13 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 
-const PORT = Number(process.env.CLAWBROWSE_PORT || 10577);
+const PORT = Number(process.env.PAWBROWSE_PORT || 10577);
 const HOST = '127.0.0.1';
-const CMD_TIMEOUT_MS = Number(process.env.CLAWBROWSE_TIMEOUT_MS || 30000);
+const CMD_TIMEOUT_MS = Number(process.env.PAWBROWSE_TIMEOUT_MS || 30000);
 const MAX_FRAME = 8 * 1024 * 1024; // reject oversized inbound frames (DoS guard)
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-const log = (...a) => process.stderr.write(`[clawbrowse] ${a.join(' ')}\n`);
+const log = (...a) => process.stderr.write(`[pawbrowse] ${a.join(' ')}\n`);
 
 /* ------------------------------------------------------------------ *
  * WebSocket bridge (minimal RFC6455: text frames, ping/pong, close)  *
@@ -127,7 +127,7 @@ function handleMessage(text, wsObj) {
 
 function callExtension(cmd, args = {}) {
   return new Promise((resolve, reject) => {
-    if (!extension) { reject(new Error('No Chrome extension connected. Load the clawbrowse extension in Chrome and make sure it shows "connected".')); return; }
+    if (!extension) { reject(new Error('No Chrome extension connected. Load the pawbrowse extension in Chrome and make sure it shows "connected".')); return; }
     const id = nextId++;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`command "${cmd}" timed out after ${CMD_TIMEOUT_MS}ms`)); }, CMD_TIMEOUT_MS);
     pending.set(id, { resolve, reject, timer });
@@ -173,7 +173,7 @@ setInterval(() => { if (extension && extension.ping) extension.ping(); }, 10000)
 
 httpServer.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    log(`ERROR: port ${PORT} is already in use — a previous clawbrowse server may still be running. Exiting.`);
+    log(`ERROR: port ${PORT} is already in use — a previous pawbrowse server may still be running. Exiting.`);
     process.exit(1);
   }
   log(`bridge error: ${e.message}`);
@@ -256,7 +256,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'clawbrowse', version: '0.3.3' },
+        serverInfo: { name: 'pawbrowse', version: '0.3.3' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply
