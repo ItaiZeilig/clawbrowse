@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-22
+
+Follow-ups from live testing + grounding the approach in the CDP/MV3 docs and jev-ultrafast
+(rather than guessing).
+
+### Added
+- `Emulation.setFocusEmulationEnabled` on attach, so a background tab keeps focus/blur,
+  rendering, and focus-dependent menus/dropdowns behaving while driving (as Playwright and
+  jev-ultrafast do). Note: a hidden tab still throttles `requestAnimationFrame`, so all waits
+  use `setTimeout`/`setInterval`, never rAF.
+
+### Fixed
+- **A single hung command can no longer wedge the whole extension**: each queued command is
+  bounded (25s) so the serialized queue always advances, even if the underlying work stalls.
+- **Extension reload always reconnects**: the bridge now accepts the newest connection and
+  drops the previous one (last-wins), instead of rejecting a second connection while an old
+  socket lingers (which could lock the reloaded extension out). Only the current socket is
+  trusted for replies; the origin check still blocks web pages.
+
 ## [0.3.2] - 2026-09-22
 
 ### Fixed
@@ -136,7 +155,8 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.3
 [0.3.2]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.2
 [0.3.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.0

@@ -38,9 +38,14 @@ async function connect() {
     if (!msg.cmd) return;
     const sock = ws;
     // Run one command at a time; overlapping calls queue instead of racing the shared debugger.
+    // Each command is bounded so a single hang can never wedge the whole queue — the chain
+    // always advances (the underlying work may leak, but subsequent commands still run).
     cmdChain = cmdChain.then(async () => {
       try {
-        const result = await handleCommand(msg.cmd, msg.args || {});
+        const result = await Promise.race([
+          handleCommand(msg.cmd, msg.args || {}),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('command timed out in extension after 25s')), 25000)),
+        ]);
         sock.send(JSON.stringify({ id: msg.id, ok: true, result }));
       } catch (e) {
         try { sock.send(JSON.stringify({ id: msg.id, ok: false, error: String(e && e.message || e) })); } catch {}
@@ -95,6 +100,11 @@ async function attach(tabId) {
   await sendCdp(tabId, 'Runtime.enable', {}).catch(() => {});
   await sendCdp(tabId, 'Page.enable', {}).catch(() => {});
   await sendCdp(tabId, 'DOM.enable', {}).catch(() => {});
+  // Make the tab behave as focused even when it's a background tab, so focus/blur, rendering,
+  // and focus-dependent menus/dropdowns work while driving (how Playwright and jev-ultrafast
+  // drive backgrounded pages). A hidden tab still throttles requestAnimationFrame, so our waits
+  // use setTimeout/setInterval, not rAF.
+  await sendCdp(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
 }
 
 function detach(tabId) {

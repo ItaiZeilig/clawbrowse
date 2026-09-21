@@ -16,7 +16,6 @@ const PORT = Number(process.env.CLAWBROWSE_PORT || 10577);
 const HOST = '127.0.0.1';
 const CMD_TIMEOUT_MS = Number(process.env.CLAWBROWSE_TIMEOUT_MS || 30000);
 const MAX_FRAME = 8 * 1024 * 1024; // reject oversized inbound frames (DoS guard)
-const LIVE_MS = 15000;             // treat the current extension as live if seen within this window (2 missed 10s pings + margin)
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 const log = (...a) => process.stderr.write(`[clawbrowse] ${a.join(' ')}\n`);
@@ -150,14 +149,11 @@ httpServer.on('upgrade', (req, socket) => {
     socket.destroy();
     return;
   }
-  // Refuse a second connection while a live extension is already attached, so another local
-  // process/extension can't silently take over the command stream. A cleanly closed or stale
-  // (unseen > LIVE_MS) socket is replaceable, so a normal extension reload still reconnects.
-  if (extension && extension.socket && !extension.socket.destroyed && (Date.now() - (extension.lastSeen || 0) < LIVE_MS)) {
-    log('rejected a second WebSocket while the extension is live');
-    socket.destroy();
-    return;
-  }
+  // Accept the newest extension connection and drop any previous one. A reload creates a new
+  // socket while the old may briefly linger; rejecting the new one would lock the extension out.
+  // Only the current (newest) socket is trusted for replies (see handleMessage), and the origin
+  // check above already blocks web pages — the main remote threat.
+  const prev = extension;
   const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
   socket.write(
     'HTTP/1.1 101 Switching Protocols\r\n' +
@@ -167,12 +163,12 @@ httpServer.on('upgrade', (req, socket) => {
   );
   const ws = makeWs(socket);
   extension = ws;
+  if (prev && prev.socket && prev.socket !== socket) { try { prev.socket.destroy(); } catch {} log('replaced previous extension connection'); }
   socket.on('close', () => { if (extension === ws) { extension = null; log('extension disconnected'); } });
   socket.on('error', () => {});
 });
 
-// Keep the current extension's liveness fresh (browser auto-pongs), so a genuinely dead
-// socket ages out of the "live" window and a reconnect is accepted.
+// Periodic ping keeps the connection warm and lets a dead socket surface a 'close'.
 setInterval(() => { if (extension && extension.ping) extension.ping(); }, 10000).unref?.();
 
 httpServer.on('error', (e) => {
@@ -260,7 +256,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'clawbrowse', version: '0.3.2' },
+        serverInfo: { name: 'clawbrowse', version: '0.3.3' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply
