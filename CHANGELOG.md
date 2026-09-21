@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-22
+
+Renamed **JevBridge → ClawBrowse**, plus a second, deeper pass over
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT) driven by a
+multi-agent audit. Closes the remaining correctness, robustness, and hardening gaps.
+
+### Added
+- **Semantic freshness guard**: an element's meaning (role/name/value/checked/selected/expanded)
+  is fingerprinted at observe time and re-checked before acting, so a silently relabeled or
+  changed target is rejected with "observe again" instead of mis-clicked.
+- **`aria-expanded` / `aria-selected`** surfaced in the table (▾/▸ open/closed, ◉ selected) so
+  the agent can tell an open menu / active tab from a closed one.
+- **Combobox "Open" companion action** and a **targeted autocomplete wait** (polls for visible
+  `[role=option]` after typing, instead of a fixed delay).
+
+### Changed
+- **Change-detection now includes per-input value/checked/selectedIndex**, fixing false
+  "page did NOT change" after a successful fill/toggle/select (password values excluded).
+- **Scroll uses a real wheel event** so overflow containers, virtualized lists, and infinite
+  scroll fire.
+- SELECT: raised option cap (15→40) and excludes `optgroup[disabled]`.
+
+### Fixed
+- **No more double-execution**: if the post-action observation fails (page navigating), ops are
+  reported as executed with "call observe next," instead of throwing so the caller retries them.
+- **`type` re-checks read-only at action time**; `select` runs the full live guard and returns a
+  navigation-safe message if its change handler destroyed the context.
+- **`click_text` now hit-tests** (elementFromPoint containment) so it can't hit a covered element.
+
+### Security
+- The bridge **rejects a second WebSocket while a live extension is attached** and **only trusts
+  the current socket's replies**, closing the local takeover/forgery vector (a stale socket still
+  ages out so a normal reload reconnects). Inbound frames are **size-capped** (8 MB) and
+  `browser_act` caps ops per call (50).
+
+### Docs
+- Operational guidance baked into tool descriptions (WAIT discipline, "a matching result doesn't
+  prove a filter applied," "a matching link isn't success — click through and assert," don't
+  re-type an already-correct field).
+
 ## [0.2.0] - 2026-09-22
 
 Perception + reliability overhaul, adapting techniques from

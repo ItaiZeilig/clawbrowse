@@ -161,6 +161,9 @@ const SNAPSHOT = `(function(){
     }
     return null;
   }
+  // Semantic guard: a stable fingerprint of an element's MEANING (role/name/value/state).
+  // Compared at action time so a silently-relabeled or changed target is rejected.
+  cache.guard=function(el){ if(!el) return ''; try{ return [role(el),(name(el)||'').replace(/\\s+/g,' ').trim(),('value' in el)?String(el.value):'',el.checked?1:0,el.getAttribute('aria-checked')||'',el.getAttribute('aria-selected')||'',el.getAttribute('aria-expanded')||'',el.matches(':disabled')?1:0].join(String.fromCharCode(1)); }catch(_){ return ''; } };
   var actions=[], nodes=document.querySelectorAll(selector);
   for(var i=0;i<nodes.length;i++){
     var e=nodes[i];
@@ -172,10 +175,12 @@ const SNAPSHOT = `(function(){
     var achecked=e.getAttribute('aria-checked');
     if(['checkbox','radio'].indexOf(e.type)>=0) base.checked=!!e.checked;
     else if(achecked!=null) base.checked=(achecked==='true');
+    var aexp=e.getAttribute('aria-expanded'); if(aexp!=null) base.expanded=(aexp==='true');
+    var asel=e.getAttribute('aria-selected'); if(asel!=null) base.selected=(asel==='true');
     if(e.tagName==='SELECT'){
       base.kind='select';
       base.value=[].map.call(e.selectedOptions,function(o){return o.label;}).join(', ');
-      base.options=[].filter.call(e.options,function(o){return !o.disabled;}).map(function(o){return o.label;}).slice(0,15);
+      base.options=[].filter.call(e.options,function(o){return !o.disabled && !(o.closest&&o.closest('optgroup[disabled]'));}).map(function(o){return o.label;}).slice(0,40);
       actions.push(base);
     } else {
       var editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' && (['textbox','searchbox','spinbutton'].indexOf(rname)>=0 || (rname==='combobox' && ['INPUT','TEXTAREA'].indexOf(e.tagName)>=0));
@@ -183,6 +188,8 @@ const SNAPSHOT = `(function(){
       if(value) base.value=value.slice(0,80);
       base.kind=editable?'fill':'click';
       actions.push(base);
+      // For an editable combobox, also offer a plain click to open its popup (not just type).
+      if(editable && rname==='combobox'){ actions.push({node:base.node, role:rname, label:'Open '+base.label, x:base.x, y:base.y, kind:'click', expanded:base.expanded}); }
     }
   }
   var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
@@ -194,7 +201,7 @@ const SNAPSHOT = `(function(){
   }
   var text=words.join('\\n').slice(0,4000);
   var omitted=Math.max(0, actions.length-250); actions.splice(250);
-  cache.byId={}; for(var j=0;j<actions.length;j++){ actions[j].id='e'+(j+1); cache.byId[actions[j].id]=actions[j].node; }
+  cache.byId={}; cache.guards={}; for(var j=0;j<actions.length;j++){ actions[j].id='e'+(j+1); cache.byId[actions[j].id]=actions[j].node; cache.guards[actions[j].id]=cache.guard(cache.nodes.get(actions[j].node)); }
   return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), text:text, omitted:omitted, actions:actions};
 })()`;
 
@@ -205,21 +212,21 @@ function formatTable(snap) {
   lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.actions.length} controls${snap.omitted ? ` (+${snap.omitted} more; scroll to reveal)` : ''}`);
   for (const a of snap.actions) {
     let flag = ' ';
-    if (a.kind === 'select') flag = '▾';
+    if (typeof a.expanded === 'boolean') flag = a.expanded ? '▾' : '▸'; // open / closed
     else if (typeof a.checked === 'boolean') flag = a.checked ? '✓' : '·';
+    else if (a.selected === true) flag = '◉';
     let line = `${a.id.padEnd(4)} ${a.kind.padEnd(6)}${flag} "${a.label}"`;
-    if (a.value && a.kind !== 'select') line += `  ▸ "${a.value}"`;
-    if (a.kind === 'select') {
-      if (a.value) line += `  ▸ "${a.value}"`;
-      if (a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
-    }
+    if (a.value) line += `  ▸ "${a.value}"`;
+    if (a.kind === 'select' && a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
     lines.push(line);
   }
   return lines.join('\n');
 }
 
-// A cheap page signature to detect whether an action actually changed the page.
-const SIG = `JSON.stringify([location.href, document.title, (document.body?document.body.innerText.length:0), document.querySelectorAll('a,button,input,select,textarea,summary,[role]').length])`;
+// A page signature to detect whether an action actually changed the page. Includes per-input
+// value/checked/selectedIndex so fills, toggles, and selects register as changes (password
+// values excluded).
+const SIG = `JSON.stringify([location.href, document.title, [].map.call(document.querySelectorAll('input,textarea,select'),function(e){return e.type==='password'?'':(String(e.value)+'~'+(e.checked?1:0)+'~'+(e.selectedIndex==null?'':e.selectedIndex));}).join('|'), document.querySelectorAll('a,button,input,select,textarea,summary,[role]').length])`;
 
 // Retry through transient "document is navigating" states so a snapshot taken
 // during a transition settles instead of failing.
@@ -244,14 +251,18 @@ async function observe(tabId) {
 
 // Re-resolve a ref to its live element, re-check it, and hit-test the center
 // (elementFromPoint containment) so we never click a stale/covered/wrong target.
-async function resolveHit(tabId, ref) {
+async function resolveHit(tabId, ref, opts) {
+  const forFill = opts && opts.fill ? 'true' : 'false';
+  const R = JSON.stringify(String(ref));
   return evaluate(tabId, `(function(){
     var c=window.__clawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
-    var node=c.byId[${JSON.stringify(String(ref))}];
+    var node=c.byId[${R}];
     if(node==null) return {error:'unknown ref (observe again)'};
     var e=c.nodes.get(node);
     if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
+    if(c.guard && c.guards && c.guards[${R}]!=null && c.guard(e)!==c.guards[${R}]) return {error:'element changed since observe (observe again)'};
     if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
+    if(${forFill} && (e.readOnly||e.getAttribute('aria-readonly')==='true')) return {error:'field is read-only'};
     if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {error:'element not visible'};
     e.scrollIntoView({block:'center',inline:'center'});
     var r=e.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
@@ -287,7 +298,10 @@ async function centerOfText(tabId, text) {
     var chosen=pool[0].el;
     chosen.scrollIntoView({block:'center',inline:'center'});
     var rr=chosen.getBoundingClientRect();
-    return {x:Math.round(rr.left+rr.width/2), y:Math.round(rr.top+rr.height/2)};
+    var cx=Math.round(rr.left+rr.width/2), cy=Math.round(rr.top+rr.height/2);
+    if(cx<0||cy<0||cx>=innerWidth||cy>=innerHeight) return null;
+    if(!chosen.contains(document.elementFromPoint(cx,cy))) return null;
+    return {x:cx, y:cy};
   })()`);
 }
 
@@ -302,6 +316,28 @@ async function settle(tabId, ms) {
   try {
     await evaluate(tabId, `new Promise(function(res){var f=0;function step(){if(++f>=2)return res(1);requestAnimationFrame(step);}requestAnimationFrame(step);setTimeout(function(){res(1);}, ${Number(ms) || 300});})`);
   } catch { await sleep(Number(ms) || 300); }
+}
+
+// After typing into a combobox, wait for its autocomplete options to actually render
+// (up to ms) before the next observation, instead of paying a fixed delay.
+async function waitForOptions(tabId, ref, ms) {
+  const R = JSON.stringify(String(ref));
+  try {
+    await evaluate(tabId, `new Promise(function(res){
+      var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null; var e=node!=null?c.nodes.get(node):null;
+      if(!e || (e.getAttribute('role')||'').toLowerCase()!=='combobox'){ return setTimeout(function(){res(1);}, 60); }
+      var ids=(e.getAttribute('aria-controls')||e.getAttribute('aria-owns')||'').split(/\\s+/).filter(Boolean);
+      var t0=Date.now();
+      function check(){
+        var roots=ids.length?ids.map(function(id){return document.getElementById(id);}).filter(Boolean):[document];
+        var opts=roots.reduce(function(a,r){return a.concat([].slice.call(r.querySelectorAll('[role=option]')));},[]);
+        var vis=opts.some(function(o){var b=o.getBoundingClientRect();return b.width&&b.height&&o.checkVisibility&&o.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});});
+        if(vis || Date.now()-t0>=${Number(ms) || 250}) return res(1);
+        requestAnimationFrame(check);
+      }
+      requestAnimationFrame(check);
+    })`);
+  } catch { await sleep(Number(ms) || 250); }
 }
 
 const KEYMAP = {
@@ -330,28 +366,38 @@ async function runOp(tabId, op) {
       return `click_text "${op.text}"`;
     }
     case 'type': {
-      const r = await resolveHit(tabId, op.ref);
+      const r = await resolveHit(tabId, op.ref, { fill: true });
       if (r.error) return `${op.ref}: ${r.error}`;
       await clickAt(tabId, r.x, r.y); // focus the field with a trusted click
       // Select-all then insert — robust for React/controlled inputs.
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2, commands: ['selectAll'] });
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2 });
       await sendCdp(tabId, 'Input.insertText', { text: String(op.text ?? '') });
+      await waitForOptions(tabId, op.ref, 250); // let autocomplete suggestions render
       return `type ${op.ref}`;
     }
     case 'select': {
-      const res = await evaluate(tabId, `(function(){
-        var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${JSON.stringify(String(op.ref))}]:null;
-        var e=node!=null?c.nodes.get(node):null;
-        if(!e) return 'unknown ref (observe again)';
-        if(e.tagName!=='SELECT') return 'not a dropdown';
-        var val=${JSON.stringify(String(op.value ?? ''))}, m=false;
-        for(var i=0;i<e.options.length;i++){var o=e.options[i]; if(!o.disabled && (o.value===val||o.label===val||o.text===val)){e.selectedIndex=i;m=true;break;}}
-        if(!m) return 'option not found';
-        e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));
-        return 'ok';
-      })()`);
-      return res === 'ok' ? `select ${op.ref}` : `${op.ref}: ${res}`;
+      const R = JSON.stringify(String(op.ref));
+      const V = JSON.stringify(String(op.value ?? ''));
+      try {
+        const res = await evaluate(tabId, `(function(){
+          var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null;
+          var e=node!=null?c.nodes.get(node):null;
+          if(!e||!e.isConnected) return 'unknown ref (observe again)';
+          if(e.tagName!=='SELECT') return 'not a dropdown';
+          if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return 'dropdown is disabled';
+          if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return 'dropdown not visible';
+          var val=${V}, m=false;
+          for(var i=0;i<e.options.length;i++){var o=e.options[i]; if(!o.disabled && !(o.closest&&o.closest('optgroup[disabled]')) && (o.value===val||o.label===val||o.text===val)){e.selectedIndex=i;m=true;break;}}
+          if(!m) return 'option not found';
+          e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));
+          return 'ok';
+        })()`);
+        return res === 'ok' ? `select ${op.ref}` : `${op.ref}: ${res}`;
+      } catch {
+        // The change handler may have navigated and destroyed the context — do not blindly retry.
+        return `select ${op.ref}: may have applied and navigated the page; observe again before retrying`;
+      }
     }
     case 'key': {
       const k = KEYMAP[op.key];
@@ -362,7 +408,10 @@ async function runOp(tabId, op) {
     }
     case 'scroll': {
       const dy = Number(op.dy ?? 600);
-      await evaluate(tabId, `window.scrollBy(0, ${dy})`);
+      // Real wheel event so overflow containers, virtualized lists, and infinite scroll fire.
+      let cx = 400, cy = 400;
+      try { const c = await evaluate(tabId, '[Math.round(innerWidth/2),Math.round(innerHeight/2)]'); if (Array.isArray(c)) { cx = c[0]; cy = c[1]; } } catch {}
+      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: dy });
       return `scroll ${dy}`;
     }
     case 'wait': {
@@ -416,11 +465,13 @@ async function handleCommand(cmd, args) {
       return `${await evaluate(tabId, 'document.title')}  —  ${await evaluate(tabId, 'location.href')}\n\n${text}`;
     }
     case 'act': {
+      const ops = args.ops || [];
+      if (ops.length > 50) throw new Error('too many ops in one call (max 50); split into smaller batches');
       const tabId = await resolveTabId(args);
       await attach(tabId);
       const before = await evaluate(tabId, SIG).catch(() => null);
       const logLines = [];
-      for (const op of (args.ops || [])) {
+      for (const op of ops) {
         try { logLines.push('  ' + await runOp(tabId, op)); }
         catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
         await settle(tabId, 250);
@@ -429,8 +480,14 @@ async function handleCommand(cmd, args) {
       const after = await evaluate(tabId, SIG).catch(() => null);
       const changed = before == null || after == null || before !== after;
       const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
-      const table = await observe(tabId);
-      return `ran ${(args.ops || []).length} op(s) [${note}]:\n${logLines.join('\n')}\n\n${table}`;
+      // The ops already executed; a failed post-action read (page navigating) must NOT make
+      // the caller think they failed and retry them.
+      let table;
+      try { table = await observe(tabId); }
+      catch {
+        return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n\n(ops executed; the page is navigating and could not be read yet — call browser_observe next. Do NOT re-run these ops.)`;
+      }
+      return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n\n${table}`;
     }
     case 'assert': {
       const tabId = await resolveTabId(args);

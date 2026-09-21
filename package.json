@@ -1,7 +1,7 @@
 {
   "name": "clawbrowse",
-  "version": "0.2.0",
-  "description": "Let Claude Code drive your real, logged-in Chrome. A zero-dependency MCP server + a Chrome MV3 extension that uses jev-style element-table perception over CDP. The calling agent is the policy: no second model, no API keys, page snapshots never leave for a third party.",
+  "version": "0.3.0",
+  "description": "Let Claude Code drive your real, logged-in Chrome. A zero-dependency MCP server + a Chrome MV3 extension that uses element-table perception over CDP. The calling agent is the policy: no second model, no API keys, page snapshots never leave for a third party.",
   "type": "module",
   "bin": { "clawbrowse": "mcp/server.mjs" },
   "scripts": {
