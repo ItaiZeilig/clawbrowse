@@ -83,27 +83,23 @@ same agent (Claude):
 > **Honest caveat:** with Claude as the shared brain, absolute wall-clock is dominated by agent
 > latency and is noisy — treat the **~2.2× ratio** as the signal, not the exact seconds. The win is
 > *structural* (fewer round trips + smaller payloads), and it also means fewer tokens per step.
-> This is **not** the sub-second speed of a dedicated click-picking model like
-> [jev-ultrafast](https://github.com/browser-use/jev-ultrafast)'s — ClawBrowse trades that raw
-> speed for a smart, general brain (Claude) with no keys and no per-click cost.
+> This is **not** the sub-second speed of a small, dedicated click-picking model — ClawBrowse
+> trades that raw speed for a smart, general brain (Claude) with no keys and no per-click cost.
 
 ---
 
 ## How it compares
 
-| | Claude-in-Chrome | jev-ultrafast | **ClawBrowse** |
-| --- | --- | --- | --- |
-| Drives your real, logged-in Chrome | ✅ | ❌ (own browser / debug port) | ✅ (`chrome.debugger`, no port) |
-| Decision model | Claude | jev-ultrafast's model (**paid, per click**) | **Claude — no second model, no key** |
-| Perception | screenshots + a11y tree | element table | **element table** |
-| Round trips per action | 2 (perceive → act) | 1 | **1** (stable refs) |
-| Page data to a third party | no | **yes** (to the model API) | **no** |
-| Per-site permission gate | yes (allowlist) | n/a | no |
-| Open source / self-owned | ❌ | partial | **✅ MIT, zero-dep** |
-| Works with any MCP client | ❌ | via its own server | **✅** |
-
-ClawBrowse borrows jev-ultrafast's excellent **perception + execution engineering** (see
-[Credits](#credits)) but swaps the paid decision-model for your own agent.
+| | Claude-in-Chrome | **ClawBrowse** |
+| --- | --- | --- |
+| Drives your real, logged-in Chrome | ✅ | ✅ (`chrome.debugger`, no port) |
+| Decision model | Claude | **Claude — no second model, no key** |
+| Perception | screenshots + a11y tree | **compact element table** |
+| Round trips per action | 2 (perceive → act) | **1** (stable refs) |
+| Page data to a third party | no | **no** |
+| Per-site permission gate | yes (allowlist) | no |
+| Open source / self-owned | ❌ | **✅ MIT, zero-dep** |
+| Works with any MCP client | ❌ | **✅** |
 
 ---
 
@@ -239,12 +235,10 @@ Questions? **[SUPPORT.md](SUPPORT.md)**.
 
 ## Credits
 
-ClawBrowse's element-table perception and action-execution techniques — accessible-name resolution,
-`checkVisibility` filtering, viewport-center hit-testing, stable node identity, robust fill, and
-focus emulation for background tabs — are adapted from
-[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT). ClawBrowse is an
-independent reimplementation as a Chrome extension + MCP server, with the calling agent (not a
-separate model) as the decision-maker. Built with [Claude Code](https://claude.com/claude-code).
+Built with [Claude Code](https://claude.com/claude-code). Some of the page-perception and
+action-execution techniques are adapted from
+[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT); this credit is
+kept as required by that project's license.
 
 ## License
 

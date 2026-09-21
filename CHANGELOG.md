@@ -8,13 +8,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [0.3.3] - 2026-09-22
 
-Follow-ups from live testing + grounding the approach in the CDP/MV3 docs and jev-ultrafast
-(rather than guessing).
+Follow-ups from live testing + grounding the approach in the CDP/MV3 docs (rather than guessing).
 
 ### Added
 - `Emulation.setFocusEmulationEnabled` on attach, so a background tab keeps focus/blur,
-  rendering, and focus-dependent menus/dropdowns behaving while driving (as Playwright and
-  jev-ultrafast do). Note: a hidden tab still throttles `requestAnimationFrame`, so all waits
+  rendering, and focus-dependent menus/dropdowns behaving while driving (the same approach
+  Playwright uses). Note: a hidden tab still throttles `requestAnimationFrame`, so all waits
   use `setTimeout`/`setInterval`, never rAF.
 
 ### Fixed
@@ -59,9 +58,8 @@ Hardening from a second multi-agent review (bug-hunt on the v0.3.0 code itself).
 
 ## [0.3.0] - 2026-09-22
 
-Renamed **JevBridge → ClawBrowse**, plus a second, deeper pass over
-[browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT) driven by a
-multi-agent audit. Closes the remaining correctness, robustness, and hardening gaps.
+Renamed **JevBridge → ClawBrowse**, plus a second, deeper multi-agent audit that closes the
+remaining correctness, robustness, and hardening gaps.
 
 ### Added
 - **Semantic freshness guard**: an element's meaning (role/name/value/checked/selected/expanded)

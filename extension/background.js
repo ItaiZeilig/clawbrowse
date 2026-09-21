@@ -101,9 +101,9 @@ async function attach(tabId) {
   await sendCdp(tabId, 'Page.enable', {}).catch(() => {});
   await sendCdp(tabId, 'DOM.enable', {}).catch(() => {});
   // Make the tab behave as focused even when it's a background tab, so focus/blur, rendering,
-  // and focus-dependent menus/dropdowns work while driving (how Playwright and jev-ultrafast
-  // drive backgrounded pages). A hidden tab still throttles requestAnimationFrame, so our waits
-  // use setTimeout/setInterval, not rAF.
+  // and focus-dependent menus/dropdowns work while driving (the same approach Playwright uses for
+  // backgrounded pages). A hidden tab still throttles requestAnimationFrame, so our waits use
+  // setTimeout/setInterval, not rAF.
   await sendCdp(tabId, 'Emulation.setFocusEmulationEnabled', { enabled: true }).catch(() => {});
 }
 
@@ -129,9 +129,9 @@ async function resolveTabId(args) {
 }
 
 /* ------------------------------ Perception -------------------------------- *
- * Adapted from browser-use/jev-ultrafast (MIT): accessible-name resolution,
- * native checkVisibility, viewport-center filtering, stable WeakMap identity,
- * select-options-as-actions, and in-viewport page text. Each snapshot re-numbers
+ * Accessible-name resolution, native checkVisibility, viewport-center filtering,
+ * stable WeakMap identity, select-options-as-actions, and in-viewport page text.
+ * (Techniques credited in the file header.) Each snapshot re-numbers
  * displayed ids (e1..) but backs them with stable node ids (cache.byId) so an
  * action re-resolves the exact element it was chosen from.
  * -------------------------------------------------------------------------- */
