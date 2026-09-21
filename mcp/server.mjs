@@ -146,6 +146,14 @@ httpServer.on('upgrade', (req, socket) => {
   socket.on('error', () => {});
 });
 
+httpServer.on('error', (e) => {
+  if (e.code === 'EADDRINUSE') {
+    log(`ERROR: port ${PORT} is already in use — a previous jevbridge server may still be running. Exiting.`);
+    process.exit(1);
+  }
+  log(`bridge error: ${e.message}`);
+  process.exit(1);
+});
 httpServer.listen(PORT, HOST, () => log(`bridge listening on ws://${HOST}:${PORT}`));
 
 /* ------------------------------------------------------------------ *
@@ -254,6 +262,10 @@ process.stdin.on('data', (chunk) => {
     handleRpc(msg);
   }
 });
+// Exit when Claude Code closes the stdio pipe, so the server never lingers as a
+// zombie holding the bridge port after the client disconnects.
 process.stdin.on('end', () => process.exit(0));
+process.stdin.on('close', () => process.exit(0));
+process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); });
 
 log('MCP server ready (stdio)');
