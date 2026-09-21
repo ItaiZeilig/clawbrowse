@@ -1,6 +1,6 @@
 # ClawBrowse Privacy Policy
 
-_Last updated: 2026-09-20_
+_Last updated: 2026-09-22_
 
 ClawBrowse is an open-source developer tool that lets a local AI coding agent (such as
 Claude Code) read and act on web pages in your own browser. This policy explains what the

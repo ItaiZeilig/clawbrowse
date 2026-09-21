@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-22
+
+Hardening from a second multi-agent review (bug-hunt on the v0.3.0 code itself).
+
+### Fixed
+- **Perception never blanks a whole page**: the in-page snapshot now wraps each element and the
+  outer pass in try/catch, so one quirky element (throwing getter, overridden DOM method) can no
+  longer abort the entire observation.
+- **Stable element refs**: displayed ids derive from the stable node identity (`e<node>`), so a
+  reused number can never silently retarget a different control across observations.
+- **Semantic guard narrowed to role + accessible name**, removing false "element changed"
+  positives on benign value/state churn and same-element multi-op batches (still catches relabels).
+- **Options page status** no longer opens a competing socket (which the single-connection guard
+  rejected, inverting the readout); it now asks the background worker for live status.
+- `type` rejects a de-editable contenteditable; checkbox/radio no longer show a cosmetic `"on"`;
+  `click_text` pre-filters by text to avoid layout thrash on large pages.
+
+### Changed
+- Commands are **serialized** in the extension so overlapping tool calls can't race the shared
+  debugger session.
+- Bridge `LIVE_MS` lowered 30s→15s (faster reconnect after an unclean disconnect); keepalive
+  alarm set to 0.5 min (avoids Chrome's sub-30s clamp warning).
+
 ## [0.3.0] - 2026-09-22
 
 Renamed **JevBridge → ClawBrowse**, plus a second, deeper pass over
@@ -104,5 +127,10 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.1
+[0.3.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.0
+[0.2.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.2.0
+[0.1.2]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.2
+[0.1.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.1.0

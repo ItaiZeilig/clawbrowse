@@ -17,7 +17,7 @@ extension does, but open source and yours.
 ClawBrowse pairs a tiny **MCP server** with a **Chrome MV3 extension**. The extension uses
 Chrome's built-in `chrome.debugger` (CDP) to read and act on your *actual* tabs — your
 profile, your logins, your open pages — with **no remote-debug port and no relaunch**. The
-page is read as a compact, numbered **element table** (jev-style), not screenshots.
+page is read as a compact, numbered **element table**, not screenshots.
 
 The calling agent (Claude) is the policy. **There is no second model and no API key.** Page
 snapshots flow up to Claude as ordinary tool results; nothing is sent to any third party.

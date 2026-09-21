@@ -1,7 +1,7 @@
 # Chrome Web Store listing — ClawBrowse
 
 Copy-paste content and a step-by-step for submitting the extension. Assets are in
-`assets/store/`, the upload package is `dist/clawbrowse-extension-v0.1.0.zip`.
+`assets/store/`, the upload package is `dist/clawbrowse-extension-v0.3.0.zip`.
 
 ---
 
@@ -47,7 +47,7 @@ HOW IT WORKS
 FEATURES
 - Drives your real, logged-in browser via the Chrome DevTools Protocol — no separate
   debug port and no browser relaunch.
-- jev-style element-table perception with stable refs.
+- Element-table perception with stable refs (numbered controls, not screenshots).
 - No external model, no API keys, no telemetry.
 - Fully open source (MIT).
 
@@ -117,18 +117,18 @@ The dashboard asks you to justify each permission. Use these:
 2. Go to the **Chrome Web Store Developer Dashboard**
    (https://chrome.google.com/webstore/devconsole), sign in, pay the **one-time US$5**
    registration fee, verify your contact email, and accept the developer agreement.
-3. Click **Add new item** → upload `dist/clawbrowse-extension-v0.1.0.zip`.
+3. Click **Add new item** → upload `dist/clawbrowse-extension-v0.3.0.zip`.
 4. Fill the **Store listing** tab with the name, summary, description, category, and URLs
    above; upload the icon, screenshot, and promo tiles from `assets/store/`.
 5. Fill the **Privacy practices** tab: single purpose, the permission justifications above,
    the data-usage disclosures, and the privacy policy URL.
 6. Set **Visibility** (Public, or Unlisted if you want a link-only release first — Unlisted
    is a good way to dogfood before a public launch).
-7. **Submit for review.** Expect extra scrutiny because of the `debugger` + `<all_urls>`
-   permissions; reviews can take from a day to a couple of weeks and may come back with
-   questions. Answer with the justifications above.
+7. **Submit for review.** Expect extra scrutiny because of the `debugger` permission (no host
+   permissions are requested); reviews can take from a day to a couple of weeks and may come
+   back with questions. Answer with the justifications above.
 
 ## Note on the published extension ID
 When published, Google assigns a new extension ID (different from the unpacked dev ID). The
-ClawBrowse MCP server accepts any local connection, so no ID needs to be hard-coded — nothing
-to change after publishing.
+ClawBrowse MCP server does not pin a specific extension ID, so nothing needs to change after
+publishing.

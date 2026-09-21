@@ -16,7 +16,7 @@ const PORT = Number(process.env.CLAWBROWSE_PORT || 10577);
 const HOST = '127.0.0.1';
 const CMD_TIMEOUT_MS = Number(process.env.CLAWBROWSE_TIMEOUT_MS || 30000);
 const MAX_FRAME = 8 * 1024 * 1024; // reject oversized inbound frames (DoS guard)
-const LIVE_MS = 30000;             // treat the current extension as live if seen within this window
+const LIVE_MS = 15000;             // treat the current extension as live if seen within this window (2 missed 10s pings + margin)
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 const log = (...a) => process.stderr.write(`[clawbrowse] ${a.join(' ')}\n`);
@@ -260,7 +260,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'clawbrowse', version: '0.3.0' },
+        serverInfo: { name: 'clawbrowse', version: '0.3.1' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply

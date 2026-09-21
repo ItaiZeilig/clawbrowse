@@ -8,18 +8,19 @@ async function load() {
 }
 
 function refreshStatus() {
-  chrome.runtime.getContexts({ contextTypes: ['BACKGROUND'] }).then(() => {
-    // Ask the service worker to report by pinging the bridge indirectly via a probe socket.
-    const p = portEl.value || 10577;
-    try {
-      const probe = new WebSocket(`ws://127.0.0.1:${p}`);
-      const t = setTimeout(() => { try { probe.close(); } catch {} statusEl.textContent = `Bridge not reachable on port ${p}. Start the MCP server (Claude Code launches it) and reconnect.`; }, 1500);
-      probe.onopen = () => { clearTimeout(t); statusEl.textContent = `Bridge reachable on port ${p}. ✅`; try { probe.close(); } catch {} };
-      probe.onerror = () => { clearTimeout(t); statusEl.textContent = `Bridge not reachable on port ${p}. Start the MCP server and reconnect.`; };
-    } catch {
-      statusEl.textContent = 'Could not probe the bridge.';
-    }
-  });
+  const p = portEl.value || 10577;
+  // Ask the background worker for its live connection state. (Don't open our own socket — the
+  // bridge only accepts one connection, so a probe would be rejected and report a false negative.)
+  try {
+    chrome.runtime.sendMessage({ type: 'status' }, (res) => {
+      if (chrome.runtime.lastError || !res) { statusEl.textContent = 'Could not reach the extension worker.'; return; }
+      statusEl.textContent = res.connected
+        ? `Connected to the bridge on port ${p}. ✅`
+        : `Not connected on port ${p}. Make sure Claude Code is running (it launches the MCP server), then wait a few seconds.`;
+    });
+  } catch {
+    statusEl.textContent = 'Could not query connection status.';
+  }
 }
 
 document.getElementById('save').addEventListener('click', async () => {

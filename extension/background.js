@@ -11,6 +11,7 @@ const IS_MAC = (navigator.userAgent || '').indexOf('Macintosh') >= 0;
 let ws = null;
 let attachedTabId = null;
 let reconnectTimer = null;
+let cmdChain = Promise.resolve(); // serialize commands so overlapping tool calls can't race CDP/attach
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -32,15 +33,19 @@ async function connect() {
     ws.send(JSON.stringify({ type: 'hello', ext: chrome.runtime.id }));
     setBadge('on');
   };
-  ws.onmessage = async (ev) => {
+  ws.onmessage = (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (!msg.cmd) return;
-    try {
-      const result = await handleCommand(msg.cmd, msg.args || {});
-      ws.send(JSON.stringify({ id: msg.id, ok: true, result }));
-    } catch (e) {
-      ws.send(JSON.stringify({ id: msg.id, ok: false, error: String(e && e.message || e) }));
-    }
+    const sock = ws;
+    // Run one command at a time; overlapping calls queue instead of racing the shared debugger.
+    cmdChain = cmdChain.then(async () => {
+      try {
+        const result = await handleCommand(msg.cmd, msg.args || {});
+        sock.send(JSON.stringify({ id: msg.id, ok: true, result }));
+      } catch (e) {
+        try { sock.send(JSON.stringify({ id: msg.id, ok: false, error: String(e && e.message || e) })); } catch {}
+      }
+    });
   };
   ws.onclose = () => { setBadge('off'); scheduleReconnect(); };
   ws.onerror = () => { try { ws.close(); } catch {} };
@@ -122,6 +127,7 @@ async function resolveTabId(args) {
  * -------------------------------------------------------------------------- */
 
 const SNAPSHOT = `(function(){
+  try{
   if(!document.body) return null;
   var cache = window.__clawbrowse || (window.__clawbrowse = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
@@ -163,10 +169,14 @@ const SNAPSHOT = `(function(){
   }
   // Semantic guard: a stable fingerprint of an element's MEANING (role/name/value/state).
   // Compared at action time so a silently-relabeled or changed target is rejected.
-  cache.guard=function(el){ if(!el) return ''; try{ return [role(el),(name(el)||'').replace(/\\s+/g,' ').trim(),('value' in el)?String(el.value):'',el.checked?1:0,el.getAttribute('aria-checked')||'',el.getAttribute('aria-selected')||'',el.getAttribute('aria-expanded')||'',el.matches(':disabled')?1:0].join(String.fromCharCode(1)); }catch(_){ return ''; } };
+  // Identity-focused: role + accessible name. Catches a target silently becoming a different
+  // control (relabel), while tolerating benign value/checked/expanded churn and same-element
+  // multi-op batches.
+  cache.guard=function(el){ if(!el) return ''; try{ return [role(el),(name(el)||'').replace(/\\s+/g,' ').trim()].join(String.fromCharCode(1)); }catch(_){ return ''; } };
   var actions=[], nodes=document.querySelectorAll(selector);
   for(var i=0;i<nodes.length;i++){
     var e=nodes[i];
+    try{
     if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
     var r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
@@ -184,13 +194,14 @@ const SNAPSHOT = `(function(){
       actions.push(base);
     } else {
       var editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' && (['textbox','searchbox','spinbutton'].indexOf(rname)>=0 || (rname==='combobox' && ['INPUT','TEXTAREA'].indexOf(e.tagName)>=0));
-      var value = ('value' in e) ? String(e.value) : ((e.isContentEditable||rname==='combobox') ? e.innerText.trim() : '');
+      var value = (['checkbox','radio'].indexOf(e.type)>=0) ? '' : (('value' in e) ? String(e.value) : ((e.isContentEditable||rname==='combobox') ? e.innerText.trim() : ''));
       if(value) base.value=value.slice(0,80);
       base.kind=editable?'fill':'click';
       actions.push(base);
       // For an editable combobox, also offer a plain click to open its popup (not just type).
       if(editable && rname==='combobox'){ actions.push({node:base.node, role:rname, label:'Open '+base.label, x:base.x, y:base.y, kind:'click', expanded:base.expanded}); }
     }
+    }catch(_){ continue; }
   }
   var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
   while((node=walker.nextNode()) && length<4000){
@@ -201,8 +212,12 @@ const SNAPSHOT = `(function(){
   }
   var text=words.join('\\n').slice(0,4000);
   var omitted=Math.max(0, actions.length-250); actions.splice(250);
-  cache.byId={}; cache.guards={}; for(var j=0;j<actions.length;j++){ actions[j].id='e'+(j+1); cache.byId[actions[j].id]=actions[j].node; cache.guards[actions[j].id]=cache.guard(cache.nodes.get(actions[j].node)); }
+  // Displayed id derives from the STABLE node id (not position), so a reused number can never
+  // remap to a different element across observations; duplicates (e.g. combobox Open) get a suffix.
+  cache.byId={}; cache.guards={}; var used={};
+  for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); }
   return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), text:text, omitted:omitted, actions:actions};
+  }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, text:'', omitted:0, actions:[]}; }
 })()`;
 
 function formatTable(snap) {
@@ -263,6 +278,7 @@ async function resolveHit(tabId, ref, opts) {
     if(c.guard && c.guards && c.guards[${R}]!=null && c.guard(e)!==c.guards[${R}]) return {error:'element changed since observe (observe again)'};
     if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
     if(${forFill} && (e.readOnly||e.getAttribute('aria-readonly')==='true')) return {error:'field is read-only'};
+    if(${forFill} && !('value' in e) && !e.isContentEditable) return {error:'not an editable field (observe again)'};
     if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {error:'element not visible'};
     e.scrollIntoView({block:'center',inline:'center'});
     var r=e.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
@@ -283,6 +299,7 @@ async function centerOfText(tabId, text) {
     var exact=[], partial=[];
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];
+      if((el.textContent||'').toLowerCase().indexOf(target)<0) continue; // cheap pre-filter, no reflow
       var r=el.getBoundingClientRect();
       if(r.width<=0||r.height<=0) continue;
       if(!el.checkVisibility||!el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) continue;
@@ -515,6 +532,12 @@ async function handleCommand(cmd, args) {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-chrome.alarms.create('clawbrowse-keepalive', { periodInMinutes: 0.4 });
+chrome.alarms.create('clawbrowse-keepalive', { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'clawbrowse-keepalive') connect(); });
+// Let the options page read live connection status without opening a competing socket
+// (which the bridge's single-connection guard would reject).
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg && msg.type === 'status') { sendResponse({ connected: !!(ws && ws.readyState === WebSocket.OPEN) }); }
+  return true;
+});
 connect();

@@ -1,7 +1,8 @@
 # Security Policy
 
-ClawBrowse's extension holds powerful permissions (`debugger` + host access to all sites),
-which is exactly why we take security reports seriously. Thank you for helping keep users safe.
+ClawBrowse's extension holds the powerful `debugger` permission (it drives pages via the Chrome
+DevTools Protocol; no host permission is requested), which is exactly why we take security reports
+seriously. Thank you for helping keep users safe.
 
 ## Supported versions
 
@@ -10,8 +11,8 @@ release only.
 
 | Version | Supported |
 | ------- | --------- |
-| 0.1.x   | ✅        |
-| < 0.1   | ❌        |
+| 0.3.x   | ✅        |
+| < 0.3   | ❌        |
 
 ## Reporting a vulnerability
 
