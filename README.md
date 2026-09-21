@@ -107,22 +107,61 @@ ClawBrowse borrows jev-ultrafast's excellent **perception + execution engineerin
 
 ---
 
-## Install (developer / unpacked)
+## Getting started
 
-1. **Load the extension**
-   - Chrome → `chrome://extensions` → toggle **Developer mode** (top right).
-   - **Load unpacked** → select the `extension/` folder. It shows a badge — green ● once connected.
+**You'll need:** Google Chrome (or Edge/Brave), **Node.js ≥ 18**, and **Claude Code** (or any MCP client).
 
-2. **Register the MCP server with Claude Code** (user scope):
-   ```bash
-   claude mcp add --scope user clawbrowse -- node /ABS/PATH/clawbrowse/mcp/server.mjs
-   ```
-   (Optional `--env CLAWBROWSE_PORT=10577` to change the port; set the same in the extension options.)
+### 1. Get the code
+```bash
+git clone https://github.com/ItaiZeilig/clawbrowse.git
+```
 
-3. **Fully restart Claude Code** so it launches the server and loads the tools. (A `/mcp`
-   reconnect or extension reload alone won't relaunch the server from disk.)
+### 2. Load the extension into Chrome
+1. Open `chrome://extensions`.
+2. Turn on **Developer mode** (top-right toggle).
+3. Click **Load unpacked** and select the **`clawbrowse/extension`** folder.
+4. You'll see a **ClawBrowse** card with a small badge icon. (It turns **green ●** once it's
+   connected to the server in step 3 — grey until then, that's normal.)
 
-> Requires **Node ≥ 18** (≥ 22 to run the test) and a Chromium-family browser (Chrome/Edge/Brave).
+### 3. Connect it to Claude Code
+Register the local server (one time), using the **full path** to where you cloned it:
+```bash
+claude mcp add --scope user clawbrowse -- node /full/path/to/clawbrowse/mcp/server.mjs
+```
+
+### 4. Restart Claude Code
+**Fully quit and reopen Claude Code** (not just `/mcp`) so it starts the server and loads the
+tools. When it's back, the extension badge should be **green ●**.
+
+> ✅ **Check it's working:** ask Claude Code *"use clawbrowse: what's my browser status?"* — it
+> should report `extension_connected: true`.
+
+## Using it
+
+You don't call the tools yourself — you just **ask Claude Code in plain language**, and it uses
+ClawBrowse to drive whatever tab you point it at. Some things to try:
+
+- *"Open news.ycombinator.com and give me the top 5 story titles."*
+- *"On this tab, search for 'open source license' and open the first result."*
+- *"Fill the signup form on the current page with my name and email, but don't submit."*
+- *"Go to my GitHub notifications and tell me what's new."*
+
+Tips:
+- It acts on the **tab you have open and are logged into** — no separate window, no re-login.
+- Point it at a specific tab by saying which one, or it uses the active tab.
+- It reads the page as a list of controls and clicks/types precisely — no screenshots needed.
+
+## Troubleshooting
+
+| Symptom | Fix |
+| --- | --- |
+| Badge never turns green | The server isn't running — make sure you **fully restarted** Claude Code after `claude mcp add` (a `/mcp` reconnect alone won't relaunch it). |
+| "No extension connected" | Reload the extension at `chrome://extensions`, then re-run `browser_status`. |
+| "Another debugger is already attached" | That tab has DevTools open or another extension driving it — close DevTools or switch tabs. |
+| A `chrome://` / Web Store page won't drive | Those are browser pages Chrome blocks from automation — use a normal web page. |
+| Changed the port | Set the same port in the extension's **Options** and in `--env CLAWBROWSE_PORT=…`. |
+
+> Requires **Node ≥ 18** (≥ 22 to run the test suite). Works on Chrome, Edge, and Brave.
 
 ---
 
