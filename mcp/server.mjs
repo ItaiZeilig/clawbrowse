@@ -188,7 +188,7 @@ const TOOLS = [
   },
   {
     name: 'browser_act',
-    description: 'Run a list of operations on the target tab in order, then return the fresh element table. ops: [{op:"click",ref:"e12"} | {op:"type",ref:"e7",text:"..."} | {op:"select",ref:"e8",value:"..."} | {op:"key",key:"Enter"} | {op:"scroll",dy:600} | {op:"wait",ms:500}].',
+    description: 'Run a list of operations on the target tab in order, then return the fresh element table. ops: [{op:"click",ref:"e12"} | {op:"click_text",text:"Built with Claude"} (click the most specific visible element matching text, for custom widgets/menus the element table cannot reference) | {op:"type",ref:"e7",text:"..."} | {op:"select",ref:"e8",value:"..."} | {op:"key",key:"Enter"} | {op:"scroll",dy:600} | {op:"wait",ms:500}].',
     inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, tabId: { type: 'number' } }, required: ['ops'] },
   },
   {

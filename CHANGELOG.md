@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-21
+
+### Added
+- `click_text` op for `browser_act`: clicks the most specific visible element matching a
+  string, for custom widgets/menus (dropdowns, flair pickers) that aren't standard controls
+  and so can't be referenced from the element table.
+
 ## [0.1.1] - 2026-09-21
 
 ### Added

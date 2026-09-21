@@ -179,6 +179,39 @@ async function centerOf(tabId, ref) {
   return evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${ref}"]'); if(!el) return null; el.scrollIntoView({block:'center',inline:'center'}); var r=el.getBoundingClientRect(); return {x:Math.round(r.left+r.width/2), y:Math.round(r.top+r.height/2)};})()`);
 }
 
+// Find the most specific (smallest) visible element whose text matches, scroll it into
+// view, and return its center. For widgets whose options aren't standard controls
+// (custom dropdowns, flair pickers, menus) that the element table can't reference.
+async function centerOfText(tabId, text) {
+  return evaluate(tabId, `(function(){
+    var target=${JSON.stringify(String(text))}.trim().toLowerCase();
+    if(!target) return null;
+    var nodes=document.querySelectorAll('a,button,li,span,div,p,label,td,th,[role=button],[role=option],[role=menuitem],[role=tab],[role=radio]');
+    var exact=[], partial=[];
+    for(var i=0;i<nodes.length;i++){
+      var el=nodes[i];
+      if(el.querySelector && el.querySelector('a,button,li,input,textarea,select')) { /* prefer leaf-ish, but still allow */ }
+      var r=el.getBoundingClientRect();
+      if(r.width<=0||r.height<=0) continue;
+      var st=getComputedStyle(el);
+      if(st.visibility==='hidden'||st.display==='none'||Number(st.opacity)===0) continue;
+      var txt=(el.innerText||el.textContent||'').trim();
+      if(!txt) continue;
+      var low=txt.toLowerCase();
+      var area=r.width*r.height;
+      if(low===target) exact.push({el:el,area:area});
+      else if(low.indexOf(target)>=0) partial.push({el:el,area:area});
+    }
+    var pool=exact.length?exact:partial;
+    if(!pool.length) return null;
+    pool.sort(function(a,b){return a.area-b.area;});
+    var chosen=pool[0].el;
+    chosen.scrollIntoView({block:'center',inline:'center'});
+    var rr=chosen.getBoundingClientRect();
+    return {x:Math.round(rr.left+rr.width/2), y:Math.round(rr.top+rr.height/2)};
+  })()`);
+}
+
 const KEYMAP = {
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
   Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
@@ -199,6 +232,14 @@ async function runOp(tabId, op) {
       await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: 1 });
       await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1 });
       return `click ${op.ref}`;
+    }
+    case 'click_text': {
+      const c = await centerOfText(tabId, op.text);
+      if (!c) return `click_text "${op.text}": not found`;
+      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
+      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: 1 });
+      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1 });
+      return `click_text "${op.text}"`;
     }
     case 'type': {
       const ok = await evaluate(tabId, `(function(){var el=document.querySelector('[data-jev-ref="${op.ref}"]'); if(!el) return false; el.focus(); if('value' in el){el.value='';} return true;})()`);

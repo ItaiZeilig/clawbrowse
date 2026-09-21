@@ -64,7 +64,8 @@ Claude Code ──stdio(MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577�
 - `browser_assert` — `{ contains? | url_includes? | ref_visible?, tabId? }` → pass/fail.
 
 **Ops for `browser_act`:**
-`{op:"click",ref:"e12"}`, `{op:"type",ref:"e7",text:"..."}`, `{op:"select",ref:"e8",value:"..."}`,
+`{op:"click",ref:"e12"}`, `{op:"click_text",text:"Built with Claude"}` (for custom widgets/menus
+the element table can't reference), `{op:"type",ref:"e7",text:"..."}`, `{op:"select",ref:"e8",value:"..."}`,
 `{op:"key",key:"Enter"}`, `{op:"scroll",dy:600}`, `{op:"wait",ms:500}`.
 
 **Element table line:** `e12 btn "Sign in"` · `e7 inp "Email" ▸ "current value"` ·
