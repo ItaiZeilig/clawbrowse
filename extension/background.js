@@ -339,22 +339,26 @@ async function settle(tabId, ms) {
 // (up to ms) before the next observation, instead of paying a fixed delay.
 async function waitForOptions(tabId, ref, ms) {
   const R = JSON.stringify(String(ref));
+  const cap = Number(ms) || 250;
   try {
+    // Poll with setInterval + a hard setTimeout cap (NOT requestAnimationFrame): rAF is paused in
+    // background tabs, which is the normal case when driving, so an rAF-only wait would hang.
     await evaluate(tabId, `new Promise(function(res){
+      var done=false; function fin(){ if(done) return; done=true; try{clearInterval(iv);}catch(_){} res(1); }
+      setTimeout(fin, ${cap});
       var c=window.__clawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null; var e=node!=null?c.nodes.get(node):null;
-      if(!e || (e.getAttribute('role')||'').toLowerCase()!=='combobox'){ return setTimeout(function(){res(1);}, 60); }
+      if(!e || (e.getAttribute('role')||'').toLowerCase()!=='combobox'){ return fin(); }
       var ids=(e.getAttribute('aria-controls')||e.getAttribute('aria-owns')||'').split(/\\s+/).filter(Boolean);
-      var t0=Date.now();
-      function check(){
-        var roots=ids.length?ids.map(function(id){return document.getElementById(id);}).filter(Boolean):[document];
-        var opts=roots.reduce(function(a,r){return a.concat([].slice.call(r.querySelectorAll('[role=option]')));},[]);
-        var vis=opts.some(function(o){var b=o.getBoundingClientRect();return b.width&&b.height&&o.checkVisibility&&o.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});});
-        if(vis || Date.now()-t0>=${Number(ms) || 250}) return res(1);
-        requestAnimationFrame(check);
-      }
-      requestAnimationFrame(check);
+      var iv=setInterval(function(){
+        try{
+          var roots=ids.length?ids.map(function(id){return document.getElementById(id);}).filter(Boolean):[document];
+          var opts=roots.reduce(function(a,r){return a.concat([].slice.call(r.querySelectorAll('[role=option]')));},[]);
+          var vis=opts.some(function(o){var b=o.getBoundingClientRect();return b.width&&b.height&&o.checkVisibility&&o.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});});
+          if(vis) fin();
+        }catch(_){ fin(); }
+      }, 40);
     })`);
-  } catch { await sleep(Number(ms) || 250); }
+  } catch { await sleep(cap); }
 }
 
 const KEYMAP = {

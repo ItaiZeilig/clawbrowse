@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-22
+
+### Fixed
+- **Actions no longer hang when driving a background tab** (the normal case). The
+  combobox-suggestion wait used `requestAnimationFrame`, which Chrome pauses in background
+  tabs, and had no `setTimeout` fallback — so `browser_act` could hang until the 30s command
+  timeout. It now polls with `setInterval` + a hard `setTimeout` cap, which fire in background
+  tabs. Found by live testing.
+
 ## [0.3.1] - 2026-09-22
 
 Hardening from a second multi-agent review (bug-hunt on the v0.3.0 code itself).
@@ -127,7 +136,8 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/ItaiZeilig/clawbrowse/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.2
 [0.3.1]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ItaiZeilig/clawbrowse/releases/tag/v0.2.0

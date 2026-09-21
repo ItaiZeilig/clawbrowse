@@ -260,7 +260,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'clawbrowse', version: '0.3.1' },
+        serverInfo: { name: 'clawbrowse', version: '0.3.2' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply
