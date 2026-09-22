@@ -109,6 +109,12 @@ Tips:
 
 ## Benchmark
 
+<p align="center">
+  <img src="assets/pawbrowse-vs-claude-in-chrome.gif" alt="Real side-by-side recording: PawBrowse vs Claude-in-Chrome on the same task" width="100%">
+</p>
+
+<p align="center"><em>Real side-by-side screen recording — same task (3 Wikipedia section jumps), same brain (Claude). PawBrowse acts in one call per click and finishes first; Claude-in-Chrome perceives-then-clicks. Measured numbers below.</em></p>
+
 Because PawBrowse keeps **stable element refs** and its `navigate`/`act` already return the fresh
 table, the agent clicks a known target in **one** round trip. Screenshot/accessibility-tree drivers
 do **perceive-then-act** — a read (or screenshot) *then* a click — paying an extra agent round trip
