@@ -1,9 +1,13 @@
-// Shared test helpers for the pawbrowse MCP server + WebSocket bridge.
+// Shared test helpers for the pawbrowse MCP server, broker, and WebSocket bridge.
 // Zero-dependency. Requires Node >= 22 (global WebSocket client) for the fake-extension helper;
 // the raw-socket helpers use only node:net so they work anywhere.
+//
+// The server is a broker CONTROLLER: it spawns/connects to a shared broker that owns the port.
+// A fake extension connects to that port over WS exactly as the real extension does.
 
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -11,6 +15,10 @@ import { dirname, join } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const SERVER = join(__dirname, '..', 'mcp', 'server.mjs');
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function brokerSock(port) {
+  return process.platform === 'win32' ? `\\\\.\\pipe\\pawbrowse-${port}` : join(os.tmpdir(), `pawbrowse-${port}.sock`);
+}
 
 // Grab a currently-free TCP port on loopback.
 export function freePort() {
@@ -23,7 +31,8 @@ export function freePort() {
 
 // Spawn the MCP server. Talk MCP over stdio; collect JSON-RPC replies by id.
 export function startServer(env = {}) {
-  const proc = spawn('node', [SERVER], { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
+  // Short broker idle timeout so brokers spawned during the run self-reap quickly.
+  const proc = spawn('node', [SERVER], { env: { PAWBROWSE_IDLE_MS: '1200', ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'] });
   const byId = new Map();
   const waiters = new Map();
   let obuf = '';

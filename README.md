@@ -27,8 +27,18 @@ capability as the first-party Claude-in-Chrome extension, but **yours, auditable
 faster per action** (see the [benchmark](#benchmark) below).
 
 ```
-Claude Code ──stdio (MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577──▶ Chrome extension ──CDP──▶ your real tabs
+Claude Code ──stdio (MCP)──▶ mcp/server.mjs ─┐
+Cursor      ──stdio (MCP)──▶ mcp/server.mjs ─┼─IPC─▶ broker ──ws://127.0.0.1:10577──▶ Chrome extension ──CDP──▶ your real tabs
+VS Code     ──stdio (MCP)──▶ mcp/server.mjs ─┘                                              │
+                                                                    each session ⇒ its own 🐾 tab group
 ```
+
+**Run as many sessions as you want.** The first one starts a shared *broker* that owns the port
+and the extension; every other session just connects to it. Each session gets its **own tab group**
+(named `🐾 PawBrowse`, its own color) and drives only its own tab, so several editors/agents can
+automate the browser at once without fighting over a port or a tab. Close a session and its tabs are
+cleaned up; the broker reaps itself when the last session ends. Nothing to configure — no ports, no
+"already in use."
 
 ---
 

@@ -10,6 +10,7 @@ trap 'rm -rf "$BUILD"' EXIT
 mkdir -p "$BUILD/server"
 cp "$ROOT/mcpb/manifest.json" "$BUILD/manifest.json"
 cp "$ROOT/mcp/server.mjs"     "$BUILD/server/server.mjs"
+cp "$ROOT/mcp/broker.mjs"     "$BUILD/server/broker.mjs"  # server.mjs spawns this sibling
 # 512x512 icon recommended by Claude Desktop; derive from the master art
 if command -v magick >/dev/null 2>&1; then
   magick "$ROOT/assets/icon.png" -resize 512x512 "$BUILD/icon.png"

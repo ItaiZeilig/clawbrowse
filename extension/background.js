@@ -1,6 +1,12 @@
 // PawBrowse background service worker.
-// Connects to the local pawbrowse MCP bridge over WebSocket and drives the user's
-// real tabs via chrome.debugger (CDP) — no remote debug port, no relaunch needed.
+// Connects to the local pawbrowse broker over WebSocket and drives the user's real tabs via
+// chrome.debugger (CDP) — no remote debug port, no relaunch needed.
+//
+// MULTI-SESSION: the broker multiplexes many editor/Claude sessions over this one connection.
+// Every command carries a `session` id; each session gets its OWN tab group (🐾 PawBrowse,
+// with its own color) and drives only its own tab, so sessions run concurrently without
+// fighting over one tab. Commands are serialized PER SESSION (not globally), so different
+// sessions' tabs are driven in parallel.
 //
 // The element-table perception and action-execution techniques (accessible-name
 // resolution, checkVisibility filtering, viewport-center hit-testing, stable node
@@ -9,11 +15,78 @@
 const DEFAULT_PORT = 10577;
 const IS_MAC = (navigator.userAgent || '').indexOf('Macintosh') >= 0;
 let ws = null;
-let attachedTabId = null;
 let reconnectTimer = null;
-let cmdChain = Promise.resolve(); // serialize commands so overlapping tool calls can't race CDP/attach
+
+// Per-session state. Each session drives its own tab(s) inside its own tab group.
+const attachedTabs = new Set();           // tabIds we currently hold a debugger on
+const sessions = new Map();               // sessionId -> { activeTabId, createdTabs:Set, groupId, num, color }
+const tabOwner = new Map();               // tabId -> sessionId (so sessions don't steal each other's tabs)
+const chains = new Map();                 // sessionId -> Promise (serialize commands within a session)
+let sessionCounter = 0;
+let colorCursor = 0;
+// PawBrowse's own group identity — deliberately NOT Claude-in-Chrome's blue "Claude" group.
+// Distinct emoji (🐾) + a rotating non-blue palette so concurrent sessions are visually distinct.
+const GROUP_COLORS = ['orange', 'cyan', 'purple', 'pink', 'green', 'yellow', 'red', 'grey'];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* --------- persistence across service-worker restarts (avoid orphan tabs/groups) --------- *
+ * MV3 kills the service worker under memory pressure, wiping the maps above. Without this, a
+ * restart would abandon each session's tab + "🐾 PawBrowse" group (and endSession would no-op),
+ * leaking one tab/group per session. We mirror the minimal session→tab/group map to
+ * chrome.storage.session (cleared when the browser closes) and rehydrate on startup. All of it is
+ * best-effort: if storage is unavailable, behaviour degrades to in-memory only.                */
+let persistTimer = null;
+function persistState() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(async () => {
+    persistTimer = null;
+    try {
+      const ser = {};
+      for (const [k, v] of sessions) ser[k] = { activeTabId: v.activeTabId, createdTabs: [...v.createdTabs], groupId: v.groupId, num: v.num, color: v.color };
+      await chrome.storage.session.set({ pawbrowse_state: { sessions: ser, tabOwner: [...tabOwner], sessionCounter, colorCursor } });
+    } catch {}
+  }, 250);
+  persistTimer.unref?.();
+}
+const rehydrated = (async () => {
+  try {
+    const { pawbrowse_state: st } = await chrome.storage.session.get('pawbrowse_state');
+    if (!st) return;
+    for (const [k, v] of Object.entries(st.sessions || {})) {
+      if (!sessions.has(k)) sessions.set(k, { activeTabId: v.activeTabId, createdTabs: new Set(v.createdTabs || []), groupId: v.groupId, num: v.num, color: v.color });
+    }
+    for (const [t, sess] of (st.tabOwner || [])) if (!tabOwner.has(t)) tabOwner.set(t, sess);
+    if (typeof st.sessionCounter === 'number') sessionCounter = Math.max(sessionCounter, st.sessionCounter);
+    if (typeof st.colorCursor === 'number') colorCursor = Math.max(colorCursor, st.colorCursor);
+  } catch {}
+})();
+
+function sessionState(session) {
+  const key = session || '_default';
+  let s = sessions.get(key);
+  if (!s) {
+    s = { activeTabId: null, createdTabs: new Set(), groupId: null, num: ++sessionCounter, color: GROUP_COLORS[colorCursor++ % GROUP_COLORS.length] };
+    sessions.set(key, s);
+    persistState();
+  }
+  return s;
+}
+
+// Put a tab into this session's tab group, creating the group (with PawBrowse's own name +
+// color + 🐾) on first use. Best-effort: grouping can fail across windows — never fatal.
+async function ensureGroup(s, tabId) {
+  try {
+    if (s.groupId != null) {
+      try { await chrome.tabs.group({ groupId: s.groupId, tabIds: [tabId] }); return; }
+      catch { s.groupId = null; } // stale group (e.g. all its tabs closed) — recreate below
+    }
+    const groupId = await chrome.tabs.group({ tabIds: [tabId] });
+    s.groupId = groupId; persistState();
+    const title = s.num > 1 ? `🐾 PawBrowse ${s.num}` : '🐾 PawBrowse';
+    await chrome.tabGroups.update(groupId, { title, color: s.color });
+  } catch {}
+}
 
 async function getPort() {
   try { const { port } = await chrome.storage.local.get('port'); return port || DEFAULT_PORT; }
@@ -37,16 +110,18 @@ async function connect() {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (!msg.cmd) return;
     const sock = ws;
-    // Run one command at a time; overlapping calls queue instead of racing the shared debugger.
-    // Each command is bounded by a 25s timeout AND a cancellation token: when the timeout fires
-    // the token is set so multi-step commands (act/navigate) stop issuing further CDP ops instead
-    // of leaking work that races the next command.
+    const session = msg.session || '_default';
+    // Serialize commands PER SESSION (overlapping calls in one session queue instead of racing
+    // that session's tab); different sessions run concurrently on their own tabs. Each command is
+    // bounded by a 25s timeout AND a cancellation token so a stalled multi-step command (act/
+    // navigate) stops issuing further CDP ops instead of leaking work into the next one.
     const token = { cancelled: false };
-    cmdChain = cmdChain.then(async () => {
+    const prev = chains.get(session) || Promise.resolve();
+    const run = prev.then(async () => {
       let timer;
       try {
         const result = await Promise.race([
-          handleCommand(msg.cmd, msg.args || {}, token),
+          handleCommand(msg.cmd, msg.args || {}, token, session),
           new Promise((_, rej) => { timer = setTimeout(() => { token.cancelled = true; rej(new Error('command timed out in extension after 25s')); }, 25000); }),
         ]);
         clearTimeout(timer);
@@ -56,6 +131,7 @@ async function connect() {
         try { sock.send(JSON.stringify({ id: msg.id, ok: false, error: String(e && e.message || e) })); } catch {}
       }
     });
+    chains.set(session, run.catch(() => {}));
   };
   ws.onclose = () => { setBadge('off'); scheduleReconnect(); };
   ws.onerror = () => { try { ws.close(); } catch {} };
@@ -92,16 +168,28 @@ async function evaluate(tabId, expression) {
   return r.result.value;
 }
 
+// Attach to a SPECIFIC tab and keep it attached (many tabs can be attached at once, one per
+// concurrent session). We never detach another tab here — that would break a sibling session.
 async function attach(tabId) {
-  if (attachedTabId === tabId) return;
-  if (attachedTabId != null) { try { await detach(attachedTabId); } catch {} }
-  await new Promise((resolve, reject) => {
+  if (attachedTabs.has(tabId)) return;
+  // "Already attached" can mean OUR own attachment survived a service-worker restart (fine) OR a
+  // FOREIGN debugger owns the tab — DevTools or another extension (not fine: we can't drive it).
+  const already = await new Promise((resolve, reject) => {
     chrome.debugger.attach({ tabId }, '1.3', () => {
       const err = chrome.runtime.lastError;
-      if (err) reject(new Error(err.message)); else resolve();
+      if (err) {
+        if (/already attached/i.test(err.message)) { resolve(true); return; }
+        reject(new Error(err.message)); return;
+      }
+      resolve(false);
     });
   });
-  attachedTabId = tabId;
+  attachedTabs.add(tabId);
+  if (already) {
+    // Probe: if we truly hold the session this succeeds; if a foreign debugger owns it, it throws.
+    try { await sendCdp(tabId, 'Runtime.evaluate', { expression: '1', returnByValue: true }); }
+    catch { attachedTabs.delete(tabId); throw new Error('another debugger is attached to this tab (close DevTools or another extension) so PawBrowse cannot drive it'); }
+  }
   await sendCdp(tabId, 'Runtime.enable', {}).catch(() => {});
   await sendCdp(tabId, 'Page.enable', {}).catch(() => {});
   await sendCdp(tabId, 'DOM.enable', {}).catch(() => {});
@@ -113,10 +201,23 @@ async function attach(tabId) {
 }
 
 function detach(tabId) {
-  return new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; resolve(); }));
+  return new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; attachedTabs.delete(tabId); resolve(); }));
 }
 
-chrome.debugger.onDetach.addListener((source) => { if (source.tabId === attachedTabId) attachedTabId = null; });
+chrome.debugger.onDetach.addListener((source) => { if (source.tabId != null) attachedTabs.delete(source.tabId); });
+
+// If a driven tab is closed (by the user or by us), forget it everywhere so a session doesn't
+// keep pointing at a dead tab.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attachedTabs.delete(tabId);
+  const owner = tabOwner.get(tabId);
+  tabOwner.delete(tabId);
+  if (owner != null) {
+    const s = sessions.get(owner);
+    if (s) { s.createdTabs.delete(tabId); if (s.activeTabId === tabId) s.activeTabId = null; }
+  }
+  persistState();
+});
 
 async function activeTab() {
   const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -132,19 +233,66 @@ function restrictedPage(url) {
     || /^https?:\/\/chrome\.google\.com\/webstore/i.test(url);
 }
 
-async function resolveTabId(args) {
-  let t;
+// Resolve which tab THIS session should drive, keeping sessions isolated:
+//   - explicit tabId  -> use it (validated), adopt into the session's group.
+//   - session already has a live tab -> reuse it.
+//   - mode 'inspect' (observe/read/act/assert), first tab -> adopt the current active page if it's
+//     free (not owned by another session); this preserves "read what I have open" for one session.
+//   - otherwise (incl. mode 'navigate' first tab) -> create a NEW tab in the session's group, so we
+//     never clobber the user's current page and concurrent sessions never share a tab.
+async function resolveTabId(session, args, mode) {
+  const s = sessionState(session);
   if (args.tabId != null) {
+    let t;
     try { t = await chrome.tabs.get(args.tabId); }
     catch { throw new Error(`tab ${args.tabId} not found (list tabs with browser_tabs)`); }
-  } else {
-    t = await activeTab();
-    if (!t) throw new Error('no active tab found');
+    if (restrictedPage(t.url)) throw new Error(`that tab (${t.url}) is a browser page that cannot be driven; use a normal web page`);
+    s.activeTabId = t.id; tabOwner.set(t.id, session); persistState();
+    await ensureGroup(s, t.id);
+    return t.id;
   }
-  if (restrictedPage(t.url)) {
-    throw new Error(`that tab (${t.url}) is a browser page that cannot be driven; use a normal web page`);
+  if (s.activeTabId != null) {
+    try { const t = await chrome.tabs.get(s.activeTabId); if (t) return s.activeTabId; }
+    catch { s.activeTabId = null; }
   }
-  return t.id;
+  if (mode === 'inspect') {
+    const t = await activeTab();
+    // Read-and-claim must stay synchronous (no await between the owner read and the set below), so
+    // two concurrent sessions can't both adopt the same tab: whichever runs first claims it, and the
+    // other sees the claim and falls through to create its own tab.
+    const owner = t ? tabOwner.get(t.id) : undefined;
+    if (t && !restrictedPage(t.url) && (owner == null || owner === session)) {
+      s.activeTabId = t.id; tabOwner.set(t.id, session); persistState();
+      await ensureGroup(s, t.id);
+      return t.id;
+    }
+  }
+  const nt = await chrome.tabs.create({ url: 'about:blank', active: false });
+  s.activeTabId = nt.id; s.createdTabs.add(nt.id); tabOwner.set(nt.id, session); persistState();
+  await ensureGroup(s, nt.id);
+  return nt.id;
+}
+
+// End a session (its controller disconnected): close only the tabs WE created for it, ungroup any
+// tab we merely adopted (the user's own), and drop the group. Never closes the user's tabs.
+async function endSession(session) {
+  const s = sessions.get(session || '_default');
+  if (!s) return { ended: true };
+  for (const tid of s.createdTabs) {
+    try { if (attachedTabs.has(tid)) await detach(tid); } catch {}
+    try { await chrome.tabs.remove(tid); } catch {}
+    attachedTabs.delete(tid); tabOwner.delete(tid);
+  }
+  if (s.activeTabId != null && !s.createdTabs.has(s.activeTabId)) {
+    const tid = s.activeTabId;
+    try { if (attachedTabs.has(tid)) await detach(tid); } catch {}
+    try { await chrome.tabs.ungroup([tid]); } catch {}
+    tabOwner.delete(tid);
+  }
+  sessions.delete(session || '_default');
+  chains.delete(session || '_default');
+  persistState();
+  return { ended: true };
 }
 
 /* ------------------------------ Perception -------------------------------- *
@@ -531,15 +679,23 @@ async function runOp(tabId, op) {
 
 /* ------------------------------ Command router ---------------------------- */
 
-async function handleCommand(cmd, args, token) {
+async function handleCommand(cmd, args, token, session) {
+  await rehydrated; // ensure persisted session→tab/group state is loaded before we resolve tabs
   const aborted = () => token && token.cancelled;
   switch (cmd) {
+    case '__session_end':
+      return endSession(session);
     case 'doctor': {
       const t = await activeTab();
+      const s = sessions.get(session || '_default');
       return {
         ext_version: chrome.runtime.getManifest().version,
         extension_id: chrome.runtime.id,
-        attached_tab_id: attachedTabId,
+        session,
+        session_tab_id: s ? s.activeTabId : null,
+        session_group_id: s ? s.groupId : null,
+        attached_tab_ids: [...attachedTabs],
+        active_sessions: sessions.size,
         active_tab: t ? { id: t.id, url: t.url, title: t.title } : null,
       };
     }
@@ -548,7 +704,7 @@ async function handleCommand(cmd, args, token) {
       return tabs.map((t) => ({ id: t.id, title: t.title, url: t.url, active: t.active, windowId: t.windowId }));
     }
     case 'navigate': {
-      const tabId = await resolveTabId(args);
+      const tabId = await resolveTabId(session, args, 'navigate');
       let url = String(args.url || '').trim();
       if (!url) throw new Error('navigate needs a url');
       if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url; // bare domain -> https
@@ -566,12 +722,12 @@ async function handleCommand(cmd, args, token) {
       return observe(tabId);
     }
     case 'observe': {
-      const tabId = await resolveTabId(args);
+      const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       return observe(tabId);
     }
     case 'read': {
-      const tabId = await resolveTabId(args);
+      const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       const max = Math.min(Number(args.max_chars) || 12000, 50000);
       const text = await evaluate(tabId, `(function(){var el=document.querySelector('main')||document.body;var t=(el.innerText||'').replace(/\\n{3,}/g,'\\n\\n');return t.slice(0, ${max});})()`);
@@ -580,7 +736,7 @@ async function handleCommand(cmd, args, token) {
     case 'act': {
       const ops = args.ops || [];
       if (ops.length > 50) throw new Error('too many ops in one call (max 50); split into smaller batches');
-      const tabId = await resolveTabId(args);
+      const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       const before = await evaluate(tabId, SIG).catch(() => null);
       const logLines = [];
@@ -604,7 +760,7 @@ async function handleCommand(cmd, args, token) {
       return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n\n${table}`;
     }
     case 'assert': {
-      const tabId = await resolveTabId(args);
+      const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       if (args.contains != null) {
         const ok = await evaluate(tabId, `!!(document.body && document.body.innerText && document.body.innerText.indexOf(${JSON.stringify(args.contains)})>=0)`);

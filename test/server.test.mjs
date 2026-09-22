@@ -1,12 +1,17 @@
-// Adversarial + regression suite for the pawbrowse MCP server and WebSocket bridge.
+// Adversarial + regression suite for the pawbrowse MCP server, broker, and WebSocket bridge.
 // No browser required (a fake extension stands in). Run with: node --test
 // Requires Node >= 22 (global WebSocket for the fake extension).
+//
+// The server is a broker controller: it spawns/connects to a shared broker over a local IPC
+// socket; the broker owns the WS port that the (fake) extension connects to and routes each
+// session's commands to it. These tests exercise that multiplexing plus the WS hardening.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   startServer, initialize, fakeExtension, freePort, sleep, waitPort,
-  rawHandshake, maskedFrame, waitClosed,
+  rawHandshake, maskedFrame, waitClosed, brokerSock,
 } from './helpers.mjs';
 
 const READONLY = ['browser_status', 'browser_tabs', 'browser_observe', 'browser_read', 'browser_assert'];
@@ -221,21 +226,73 @@ test('last-wins: a newly connected extension takes over command delivery', async
   } finally { extA.close(); extB.close(); srv.kill(); }
 });
 
-test('port already in use: second server stays alive and reports bridge_error', async () => {
+test('extension replacement fails in-flight commands fast (last-wins, no 30s hang)', async () => {
   const port = await freePort();
-  const srv1 = startServer({ PAWBROWSE_PORT: String(port) });
-  await waitPort(port); // srv1 owns the port
-  const srv2 = startServer({ PAWBROWSE_PORT: String(port) });
+  const srv = startServer({ PAWBROWSE_PORT: String(port) });
+  const extA = fakeExtension(port, () => null); // receives the command but never replies
+  await extA.ready; await sleep(50);
+  await initialize(srv);
+  const t0 = Date.now();
+  srv.rpc({ jsonrpc: '2.0', id: 90, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+  await sleep(150); // let the command reach extA and become pending in the broker
+  const extB = fakeExtension(port, () => ({ result: 'B' }));
+  await extB.ready; // replacing extension -> broker must fail the in-flight request now
   try {
-    // srv2 must still answer MCP even though the bridge port is taken.
-    await initialize(srv2);
-    srv2.rpc({ jsonrpc: '2.0', id: 50, method: 'tools/call', params: { name: 'browser_status', arguments: {} } });
-    const r = await srv2.waitFor(50, 3000);
-    const body = JSON.parse(r.result.content[0].text);
-    assert.ok(body.bridge_error, 'browser_status reports a bridge_error');
-    assert.match(body.bridge_error, /in use|another/i);
-    assert.equal(srv2.exitCode(), null, 'second server did not exit');
-  } finally { srv1.kill(); srv2.kill(); }
+    const r = await srv.waitFor(90, 8000);
+    const dt = Date.now() - t0;
+    assert.equal(r.result.isError, true);
+    assert.ok(dt < 5000, `should fail fast on replacement, took ${dt}ms`);
+    assert.match(r.result.content[0].text, /reconnect|replac/i);
+  } finally { extA.close(); extB.close(); srv.kill(); }
+});
+
+test('two sessions share ONE broker with no port contention (both drive concurrently)', async () => {
+  const port = await freePort();
+  // The fake extension echoes the session id it was told, so we can prove routing per session.
+  const srv1 = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_SESSION: 'sessA' });
+  const srv2 = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_SESSION: 'sessB' });
+  const ext = fakeExtension(port, (m) => ({ result: `${m.session}:${m.cmd}` }));
+  try {
+    await ext.ready; await sleep(100);
+    await initialize(srv1); await initialize(srv2);
+    srv1.rpc({ jsonrpc: '2.0', id: 50, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+    srv2.rpc({ jsonrpc: '2.0', id: 51, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+    const [a, b] = await Promise.all([srv1.waitFor(50, 5000), srv2.waitFor(51, 5000)]);
+    assert.equal(a.result.content[0].text, 'sessA:observe', 'session A routed to its own session id');
+    assert.equal(b.result.content[0].text, 'sessB:observe', 'session B routed to its own session id');
+    assert.equal(srv1.exitCode(), null); assert.equal(srv2.exitCode(), null);
+  } finally { ext.close(); srv1.kill(); srv2.kill(); }
+});
+
+test('a session command carries its session id to the extension', async () => {
+  const port = await freePort();
+  const srv = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_SESSION: 'zzz' });
+  const ext = fakeExtension(port, (m) => ({ result: 'ok' }));
+  try {
+    await ext.ready; await sleep(50);
+    await initialize(srv);
+    srv.rpc({ jsonrpc: '2.0', id: 52, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+    await srv.waitFor(52, 5000);
+    const cmd = ext.received.find((m) => m.cmd === 'observe');
+    assert.ok(cmd, 'extension received the command');
+    assert.equal(cmd.session, 'zzz', 'command tagged with the session id');
+  } finally { ext.close(); srv.kill(); }
+});
+
+test('when a session ends, the broker tells the extension to clean up that session', async () => {
+  const port = await freePort();
+  const srv = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_SESSION: 'ending' });
+  const ext = fakeExtension(port, () => ({ result: 'ok' }));
+  try {
+    await ext.ready; await sleep(50);
+    await initialize(srv);
+    // Use the session once so the broker knows about it, then drop the controller.
+    srv.rpc({ jsonrpc: '2.0', id: 53, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+    await srv.waitFor(53, 5000);
+    srv.proc.stdin.end(); // controller disconnects
+    await sleep(400);
+    assert.ok(ext.received.some((m) => m.cmd === '__session_end' && m.session === 'ending'), 'extension got __session_end for the session');
+  } finally { ext.close(); srv.kill(); }
 });
 
 test('invalid env vars fall back to defaults instead of breaking the server', async () => {
@@ -308,6 +365,38 @@ test('non-JSON garbage from the extension is ignored; commands still work', asyn
     const r = await srv.waitFor(70, 3000);
     assert.equal(r.result.content[0].text, 'ok', 'server still serves commands after garbage input');
   } finally { ext.close(); srv.kill(); }
+});
+
+/* --------------------------- broker lifecycle / zombies -------------------- */
+
+test('broker reaps itself (and its socket) after the last session ends', { skip: process.platform === 'win32' }, async () => {
+  const port = await freePort();
+  const srv = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_IDLE_MS: '300' });
+  await waitPort(port); // broker is up
+  const sock = brokerSock(port);
+  srv.proc.stdin.end(); // last (only) session ends -> controller disconnects
+  let gone = false;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) { if (!fs.existsSync(sock)) { gone = true; break; } await sleep(100); }
+  assert.equal(gone, true, 'broker removed its IPC socket after going idle (no zombie)');
+  srv.kill();
+});
+
+test('a new session respawns the broker after the previous one reaped it', async () => {
+  const port = await freePort();
+  const s1 = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_IDLE_MS: '300' });
+  await waitPort(port);
+  s1.proc.stdin.end();
+  await sleep(1400); // allow the broker to reap and free the port
+  const s2 = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_IDLE_MS: '1200' });
+  const ext = fakeExtension(port, () => ({ result: 'respawned-ok' }));
+  try {
+    await ext.ready; await sleep(50);
+    await initialize(s2);
+    s2.rpc({ jsonrpc: '2.0', id: 80, method: 'tools/call', params: { name: 'browser_observe', arguments: {} } });
+    const r = await s2.waitFor(80, 6000);
+    assert.equal(r.result.content[0].text, 'respawned-ok', 'a fresh broker was spawned and drives commands');
+  } finally { ext.close(); s1.kill(); s2.kill(); }
 });
 
 /* -------------------------------- lifecycle ------------------------------- */

@@ -1,204 +1,139 @@
 #!/usr/bin/env node
 // pawbrowse MCP server — zero-dependency.
 //
-// Two faces:
+// Each editor/Claude session runs its own copy of this server. It is a thin *controller*:
 //   1. An MCP server over stdio (newline-delimited JSON-RPC 2.0) that Claude Code talks to.
-//   2. A localhost-only WebSocket bridge (default 127.0.0.1:10577) that the Chrome
-//      extension connects to. The extension does the actual CDP driving of your real tabs.
+//   2. A client of the shared PawBrowse *broker* (a local IPC socket). The broker owns the
+//      single WebSocket to the Chrome extension and gives THIS session its own tab group, so
+//      many sessions drive the browser at once without fighting over the port.
+//
+// If no broker is running yet, the first server to start spawns one (detached). Servers never
+// bind the bridge port themselves, so "port already in use" can't happen between sessions.
 //
 // The calling agent (Claude) is the policy. There is no second model and no API key:
 // page snapshots flow up to Claude as tool results, nothing is sent to any third party.
 
-import http from 'node:http';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const posInt = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : d; };
 const PORT = posInt(process.env.PAWBROWSE_PORT, 10577);
-const HOST = '127.0.0.1';
 const CMD_TIMEOUT_MS = posInt(process.env.PAWBROWSE_TIMEOUT_MS, 30000);
-const MAX_FRAME = 8 * 1024 * 1024; // reject oversized inbound frames (DoS guard)
-const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+function brokerSock(port) {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\pawbrowse-${port}`
+    : path.join(os.tmpdir(), `pawbrowse-${port}.sock`);
+}
+const SOCK = brokerSock(PORT);
+const BROKER_PATH = fileURLToPath(new URL('./broker.mjs', import.meta.url));
+// A stable-ish, unique session id per server process (also names this session's tab group).
+const SESSION = process.env.PAWBROWSE_SESSION || `s${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
 
 const log = (...a) => process.stderr.write(`[pawbrowse] ${a.join(' ')}\n`);
 
 /* ------------------------------------------------------------------ *
- * WebSocket bridge (minimal RFC6455: text frames, ping/pong, close)  *
+ * Broker client (control plane over local IPC)                       *
  * ------------------------------------------------------------------ */
 
-let extension = null;          // the currently connected extension socket wrapper
+let broker = null;             // connected net socket to the broker
+let extConnected = false;      // does the broker report a live extension?
+let connecting = null;         // in-flight connect promise (dedupe)
 const pending = new Map();     // id -> { resolve, reject, timer }
 let nextId = 1;
-let bridgeError = null;        // set if the bridge can't listen (e.g. port in use)
 
-// Reject every in-flight command at once (extension disconnected / replaced), so a tool
-// call fails fast with a clear reason instead of hanging until CMD_TIMEOUT_MS.
 function failAllPending(reason) {
   for (const [, p] of pending) { clearTimeout(p.timer); try { p.reject(new Error(reason)); } catch {} }
   pending.clear();
 }
 
-function makeWs(socket) {
-  let buf = Buffer.alloc(0);
-  let fragOpcode = null;
-  let fragChunks = [];
-  let fragLen = 0;
+// Spawn a broker (detached). Safe to call whenever no broker answers, including after one dies:
+// if another broker already owns the port, this one exits immediately on EADDRINUSE.
+function spawnBroker() {
+  try {
+    const child = spawn(process.execPath, [BROKER_PATH], { detached: true, stdio: 'ignore', env: process.env });
+    child.unref();
+    log('spawned broker');
+  } catch (e) { log(`could not spawn broker: ${e.message}`); }
+}
 
-  const send = (str) => {
-    const payload = Buffer.from(str, 'utf8');
-    const len = payload.length;
-    let header;
-    if (len < 126) {
-      header = Buffer.from([0x81, len]);
-    } else if (len < 65536) {
-      header = Buffer.alloc(4);
-      header[0] = 0x81; header[1] = 126; header.writeUInt16BE(len, 2);
-    } else {
-      header = Buffer.alloc(10);
-      header[0] = 0x81; header[1] = 127;
-      header.writeUInt32BE(Math.floor(len / 2 ** 32), 2);
-      header.writeUInt32BE(len >>> 0, 6);
-    }
-    socket.write(Buffer.concat([header, payload]));
-  };
-
-  const sendCtl = (opcode, payload = Buffer.alloc(0)) => {
-    socket.write(Buffer.concat([Buffer.from([0x80 | opcode, payload.length]), payload]));
-  };
-
-  const self = { send, socket, lastSeen: Date.now(), ping: () => { try { sendCtl(0x9); } catch {} } };
-
-  socket.on('data', (chunk) => {
-    self.lastSeen = Date.now();
-    buf = Buffer.concat([buf, chunk]);
-    for (;;) {
-      if (buf.length < 2) return;
-      const b0 = buf[0], b1 = buf[1];
-      const fin = (b0 & 0x80) !== 0;
-      const opcode = b0 & 0x0f;
-      const masked = (b1 & 0x80) !== 0;
-      let len = b1 & 0x7f;
-      let offset = 2;
-      if (len === 126) {
-        if (buf.length < offset + 2) return;
-        len = buf.readUInt16BE(offset); offset += 2;
-      } else if (len === 127) {
-        if (buf.length < offset + 8) return;
-        const hi = buf.readUInt32BE(offset), lo = buf.readUInt32BE(offset + 4);
-        len = hi * 2 ** 32 + lo; offset += 8;
-      }
-      let mask;
-      if (masked) {
-        if (buf.length < offset + 4) return;
-        mask = buf.slice(offset, offset + 4); offset += 4;
-      }
-      if ((opcode & 0x8) && (len > 125 || !fin)) { log('malformed control frame; closing'); socket.destroy(); return; }
-      if (len > MAX_FRAME) { log(`frame too large (${len} bytes); closing`); socket.destroy(); return; }
-      if (buf.length < offset + len) return;
-      let payload = buf.slice(offset, offset + len);
-      if (masked) {
-        const out = Buffer.alloc(len);
-        for (let i = 0; i < len; i++) out[i] = payload[i] ^ mask[i & 3];
-        payload = out;
-      }
-      buf = buf.slice(offset + len);
-
-      if (opcode === 0x8) { sendCtl(0x8); socket.end(); return; }      // close
-      if (opcode === 0x9) { sendCtl(0xA, payload); continue; }          // ping -> pong
-      if (opcode === 0xA) { continue; }                                 // pong
-      if (opcode === 0x0) {                                             // continuation
-        fragChunks.push(payload); fragLen += len;
-        if (fragLen > MAX_FRAME) { log('fragmented message too large; closing'); socket.destroy(); return; }
-        if (fin) { handleMessage(Buffer.concat(fragChunks).toString('utf8'), self); fragOpcode = null; fragChunks = []; fragLen = 0; }
-        continue;
-      }
-      if (opcode === 0x1 || opcode === 0x2) {                           // text / binary
-        if (fin) { handleMessage(payload.toString('utf8'), self); }
-        else { fragOpcode = opcode; fragChunks = [payload]; fragLen = len; }
-        continue;
-      }
+function wireBroker(sock) {
+  broker = sock;
+  let sbuf = '';
+  sock.setEncoding('utf8');
+  sock.on('data', (d) => {
+    sbuf += d;
+    let nl;
+    while ((nl = sbuf.indexOf('\n')) >= 0) {
+      const line = sbuf.slice(0, nl).trim(); sbuf = sbuf.slice(nl + 1);
+      if (!line) continue;
+      let msg; try { msg = JSON.parse(line); } catch { continue; }
+      onBrokerMessage(msg);
     }
   });
-
-  return self;
+  sock.on('error', () => {});
+  sock.on('close', () => {
+    if (broker === sock) { broker = null; extConnected = false; failAllPending('broker connection lost'); }
+  });
+  // Register this session.
+  try { sock.write(JSON.stringify({ t: 'hello', session: SESSION }) + '\n'); } catch {}
 }
 
-function handleMessage(text, wsObj) {
-  // Only trust the currently-registered extension socket, so a second/other local peer
-  // cannot resolve another connection's pending command with forged results.
-  if (wsObj !== extension) return;
-  let msg;
-  try { msg = JSON.parse(text); } catch { return; }
-  if (msg.type === 'hello') { log(`extension connected (${msg.ext || 'unknown'})`); return; }
-  const p = pending.get(msg.id);
-  if (!p) return;
-  clearTimeout(p.timer);
-  pending.delete(msg.id);
-  if (msg.ok) p.resolve(msg.result);
-  else p.reject(new Error(msg.error || 'extension error'));
+function onBrokerMessage(msg) {
+  if (msg.t === 'welcome') { extConnected = !!msg.extension_connected; return; }
+  if (msg.t === 'status') { extConnected = !!msg.extension_connected; return; }
+  if (msg.t === 'res') {
+    const p = pending.get(msg.id);
+    if (!p) return;
+    clearTimeout(p.timer); pending.delete(msg.id);
+    if (msg.ok) p.resolve(msg.result);
+    else p.reject(new Error(msg.error || 'extension error'));
+  }
 }
 
-function callExtension(cmd, args = {}) {
+// Connect to the broker, spawning one if none answers. Retries briefly to cover the
+// spawn/bind race (and a race between two sessions both spawning a broker).
+function ensureBroker() {
+  if (broker) return Promise.resolve(broker);
+  if (connecting) return connecting;
+  connecting = new Promise((resolve) => {
+    let attempts = 0;
+    const tryConnect = () => {
+      const sock = net.connect(SOCK);
+      const onErr = () => {
+        sock.destroy();
+        attempts++;
+        if (attempts === 1) spawnBroker(); // no broker answered — start one (dupes exit on EADDRINUSE)
+        if (attempts > 60) { connecting = null; resolve(null); return; }
+        setTimeout(tryConnect, 100);
+      };
+      sock.once('error', onErr);
+      sock.once('connect', () => { sock.removeListener('error', onErr); if (!broker) wireBroker(sock); else sock.destroy(); connecting = null; resolve(broker); });
+    };
+    tryConnect();
+  });
+  return connecting;
+}
+
+async function callExtension(cmd, args = {}) {
+  const sock = await ensureBroker();
+  if (!sock) throw new Error(`PawBrowse broker unavailable on ${SOCK} (could not start it). Check that Node can run ${BROKER_PATH}.`);
   return new Promise((resolve, reject) => {
-    if (!extension) { reject(new Error(bridgeError || 'No Chrome extension connected. Load the pawbrowse extension in Chrome and make sure it shows "connected".')); return; }
     const id = nextId++;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`command "${cmd}" timed out after ${CMD_TIMEOUT_MS}ms`)); }, CMD_TIMEOUT_MS);
     pending.set(id, { resolve, reject, timer });
-    try { extension.send(JSON.stringify({ id, cmd, args })); }
+    try { sock.write(JSON.stringify({ t: 'cmd', id, cmd, args, session: SESSION }) + '\n'); }
     catch (e) { clearTimeout(timer); pending.delete(id); reject(e); }
   });
 }
 
-const httpServer = http.createServer((req, res) => { res.writeHead(426); res.end('Upgrade required'); });
-
-httpServer.on('upgrade', (req, socket) => {
-  const key = req.headers['sec-websocket-key'];
-  if (!key) { socket.destroy(); return; }
-  // Only the extension (or local tooling with no browser origin) may connect. A web page
-  // could otherwise open ws://127.0.0.1 and impersonate the extension. Reject web origins.
-  const origin = req.headers.origin || '';
-  if (origin && !origin.startsWith('chrome-extension://')) {
-    log(`rejected WebSocket from disallowed origin: ${origin}`);
-    socket.destroy();
-    return;
-  }
-  // Accept the newest extension connection and drop any previous one. A reload creates a new
-  // socket while the old may briefly linger; rejecting the new one would lock the extension out.
-  // Only the current (newest) socket is trusted for replies (see handleMessage), and the origin
-  // check above already blocks web pages — the main remote threat.
-  const prev = extension;
-  const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
-  socket.write(
-    'HTTP/1.1 101 Switching Protocols\r\n' +
-    'Upgrade: websocket\r\n' +
-    'Connection: Upgrade\r\n' +
-    `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
-  );
-  const ws = makeWs(socket);
-  extension = ws;
-  if (prev && prev.socket && prev.socket !== socket) {
-    try { prev.socket.destroy(); } catch {}
-    failAllPending('extension reconnected (previous connection replaced)');
-    log('replaced previous extension connection');
-  }
-  socket.on('close', () => { if (extension === ws) { extension = null; failAllPending('extension disconnected mid-command'); log('extension disconnected'); } });
-  socket.on('error', () => {});
-});
-
-// Periodic ping keeps the connection warm and lets a dead socket surface a 'close'.
-setInterval(() => { if (extension && extension.ping) extension.ping(); }, 10000).unref?.();
-
-httpServer.on('error', (e) => {
-  // Don't kill the MCP (stdio) side — keep answering the client so it can report a clear
-  // reason instead of showing "server failed / all tools unavailable". The bridge just
-  // won't accept the extension until the conflict clears.
-  if (e.code === 'EADDRINUSE') {
-    bridgeError = `PawBrowse can't use port ${PORT} — another PawBrowse instance (e.g. another editor or Claude client) is already running the bridge. Only one client can drive the browser at a time. Close the other one, or set a different PAWBROWSE_PORT for this client.`;
-  } else {
-    bridgeError = `PawBrowse bridge error: ${e.message}`;
-  }
-  log(bridgeError);
-});
-httpServer.listen(PORT, HOST, () => log(`bridge listening on ws://${HOST}:${PORT}`));
+// Bring the broker up at startup (spawning it if this is the first session), so the Chrome
+// extension — which is always trying to reach the port — can connect as soon as a session exists.
+ensureBroker().then((s) => { if (s) log(`connected to broker (session ${SESSION})`); });
 
 /* ------------------------------------------------------------------ *
  * MCP server over stdio (newline-delimited JSON-RPC 2.0)             *
@@ -257,10 +192,10 @@ function textResult(obj) {
 async function callTool(name, args) {
   switch (name) {
     case 'browser_status': {
-      const base = { bridge: `ws://${HOST}:${PORT}`, extension_connected: !!extension };
-      if (bridgeError) base.bridge_error = bridgeError;
-      if (!extension) return textResult(base);
-      try { const d = await callExtension('doctor', {}); return textResult({ ...base, ...d }); }
+      await ensureBroker().catch(() => {});
+      const base = { bridge: `ws://127.0.0.1:${PORT}`, broker: SOCK, session: SESSION, broker_connected: !!broker, extension_connected: extConnected };
+      if (!broker) return textResult({ ...base, note: 'Broker not reachable (could not start it).' });
+      try { const d = await callExtension('doctor', {}); return textResult({ ...base, extension_connected: true, ...d }); }
       catch (e) { return textResult({ ...base, note: e.message }); }
     }
     case 'browser_tabs':    return textResult(await callExtension('tabs', {}));
@@ -283,7 +218,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'pawbrowse', version: '0.4.0' },
+        serverInfo: { name: 'pawbrowse', version: '0.5.0' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply
@@ -324,14 +259,12 @@ process.stdin.on('data', (chunk) => {
     handleRpc(msg);
   }
 });
-// Exit when Claude Code closes the stdio pipe, so the server never lingers as a
-// zombie holding the bridge port after the client disconnects.
+// Exit when Claude Code closes the stdio pipe. The broker keeps running for other sessions
+// and reaps itself once no session (and no extension) remains.
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('close', () => process.exit(0));
 process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); });
 
-// Last-resort guards: an unexpected throw in a socket/data callback shouldn't take the
-// whole bridge down. Log and keep serving.
 process.on('uncaughtException', (e) => log(`uncaughtException: ${(e && e.stack) || e}`));
 process.on('unhandledRejection', (e) => log(`unhandledRejection: ${(e && e.stack) || e}`));
 

@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-22
+
+### Added — multiple concurrent sessions (broker + per-session tab groups)
+
+You can now run **as many editor/agent sessions as you want at the same time**, with zero
+configuration and no "port already in use." This replaces the old single-owner bridge (where a
+second Claude/Cursor/VS Code session was locked out until the first one closed).
+
+- **Shared broker process.** The first session spawns a small broker that owns the bridge port
+  (`127.0.0.1:10577`) and the single Chrome-extension connection. Every other session connects to
+  the broker over a local IPC socket (unix socket / Windows named pipe) instead of binding the port
+  itself, so sessions never contend for it. The broker multiplexes all sessions over the one
+  extension connection, routing each session's commands independently.
+- **A tab group per session.** Each session drives its **own tab group** — named `🐾 PawBrowse`
+  (numbered for the 2nd+), each with its own color — and only its own tab, so concurrent sessions
+  can't fight over a tab. The group name/color is deliberately distinct from Claude-in-Chrome's, so
+  the two never interfere.
+- **Automatic cleanup ("kill zombies").** Closing a session tells the broker to close the tabs that
+  session created and ungroup any it borrowed; the broker reaps itself once the last session ends.
+  A crashed/dead broker is detected and re-spawned on the next command — no stale process holding
+  the port, nothing to kill by hand.
+- The MCP server (`mcp/server.mjs`) is now a thin per-session controller; the broker lives in
+  `mcp/broker.mjs`. The extension now attaches per-tab (many tabs at once) and serializes commands
+  **per session** so different sessions run in parallel.
+
+### Security
+- The controller IPC socket is created owner-only (`0600`) on unix.
+
+### Tests
+- Suite updated for the new architecture (23 cases, still zero-dependency): multi-session routing
+  and isolation (two sessions share one broker, each routed to its own session id), session-id
+  tagging, `__session_end` cleanup on disconnect, plus all prior MCP-protocol and raw-WS hardening
+  cases carried over to the broker.
+
 ## [0.4.0] - 2026-09-22
 
 ### Added
@@ -209,7 +243,10 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/pawbrowse/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/ItaiZeilig/pawbrowse/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.5.0
+[0.4.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.4.0
+[0.3.4]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.4
 [0.3.3]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.3
 [0.3.2]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.2
 [0.3.1]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.1
