@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pawbrowse": {
+      "command": "node",
+      "args": ["mcp/server.mjs"]
+    }
+  }
+}

@@ -50,9 +50,13 @@ your browser) plus a tiny **local server** your AI client runs — both install 
 <p>
 <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=pawbrowse&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInBhd2Jyb3dzZUBsYXRlc3QiXX0="><img src="https://img.shields.io/badge/Add%20to-Cursor-000000?logo=cursor&logoColor=white&style=for-the-badge" alt="Add to Cursor"></a>
 <a href="https://insiders.vscode.dev/redirect/mcp/install?name=pawbrowse&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22pawbrowse%40latest%22%5D%7D"><img src="https://img.shields.io/badge/Install%20in-VS%20Code-007ACC?logo=visualstudiocode&logoColor=white&style=for-the-badge" alt="Install in VS Code"></a>
+<a href="https://github.com/ItaiZeilig/pawbrowse/raw/main/dist/pawbrowse.mcpb"><img src="https://img.shields.io/badge/Add%20to-Claude%20Desktop-D97757?logo=anthropic&logoColor=white&style=for-the-badge" alt="Add to Claude Desktop"></a>
 </p>
 
-**Claude Code** — one line (it has no click-to-install, so paste this):
+**Claude Desktop** — click the button above to download `pawbrowse.mcpb`, then **double-click it**
+(or drag it into **Settings → Extensions**) and click **Install**. No command, no config.
+
+**Claude Code** — one line (the CLI has no click-to-install, so paste this):
 
 ```bash
 claude mcp add --scope user pawbrowse -- npx -y pawbrowse@latest
@@ -72,10 +76,10 @@ git clone https://github.com/ItaiZeilig/pawbrowse.git
 ```
 1. **Load the extension:** `chrome://extensions` → **Developer mode** → **Load unpacked** → pick
    the `pawbrowse/extension` folder.
-2. **Register the server** with the full path to your clone:
-   ```bash
-   claude mcp add --scope user pawbrowse -- node /full/path/to/pawbrowse/mcp/server.mjs
-   ```
+2. **Run Claude Code from the clone.** The repo ships a project [`.mcp.json`](.mcp.json), so Claude
+   Code offers to enable `pawbrowse` (running the local `mcp/server.mjs`) automatically — just
+   approve it. No npm, no manual `claude mcp add`.
+   Prefer to register it yourself? `claude mcp add --scope user pawbrowse -- node /full/path/to/pawbrowse/mcp/server.mjs`
 3. **Fully restart Claude Code** (not just `/mcp`), then run the status check above.
 </details>
 

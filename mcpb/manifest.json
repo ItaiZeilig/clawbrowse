@@ -1,0 +1,32 @@
+{
+  "manifest_version": "0.2",
+  "name": "pawbrowse",
+  "display_name": "PawBrowse",
+  "version": "0.3.3",
+  "description": "Let Claude drive your real, logged-in Chrome. Fast element-table control, open source, no keys.",
+  "author": {
+    "name": "Itai Zeilig",
+    "url": "https://github.com/ItaiZeilig"
+  },
+  "homepage": "https://github.com/ItaiZeilig/pawbrowse",
+  "documentation": "https://github.com/ItaiZeilig/pawbrowse#readme",
+  "support": "https://github.com/ItaiZeilig/pawbrowse/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/server.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/server.mjs"],
+      "env": {}
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "keywords": ["browser", "chrome", "cdp", "automation", "mcp", "claude"],
+  "license": "MIT"
+}
