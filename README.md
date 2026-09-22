@@ -49,7 +49,7 @@ your browser) plus a tiny **local server** your AI client runs — both install 
 
 <p>
 <a href="cursor://anysphere.cursor-deeplink/mcp/install?name=pawbrowse&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInBhd2Jyb3dzZUBsYXRlc3QiXX0="><img src="https://img.shields.io/badge/Add%20to-Cursor-000000?logo=cursor&logoColor=white&style=for-the-badge" alt="Add to Cursor"></a>
-<a href="https://vscode.dev/redirect/mcp/install?name=pawbrowse&config=%7B%22name%22%3A%22pawbrowse%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22pawbrowse%40latest%22%5D%7D"><img src="https://img.shields.io/badge/Install%20in-VS%20Code-007ACC?logo=visualstudiocode&logoColor=white&style=for-the-badge" alt="Install in VS Code"></a>
+<a href="https://insiders.vscode.dev/redirect/mcp/install?name=pawbrowse&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22pawbrowse%40latest%22%5D%7D"><img src="https://img.shields.io/badge/Install%20in-VS%20Code-007ACC?logo=visualstudiocode&logoColor=white&style=for-the-badge" alt="Install in VS Code"></a>
 </p>
 
 **Claude Code** — one line (it has no click-to-install, so paste this):
