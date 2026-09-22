@@ -11,6 +11,7 @@
   "homepage": "https://github.com/ItaiZeilig/pawbrowse",
   "documentation": "https://github.com/ItaiZeilig/pawbrowse#readme",
   "support": "https://github.com/ItaiZeilig/pawbrowse/issues",
+  "privacy_policies": ["https://github.com/ItaiZeilig/pawbrowse/blob/main/PRIVACY.md"],
   "icon": "icon.png",
   "server": {
     "type": "node",

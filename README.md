@@ -236,6 +236,20 @@ PawBrowse was hardened through two multi-agent code audits **and** live testing 
 
 Found a vulnerability? See **[SECURITY.md](SECURITY.md)** — please don't open a public issue.
 
+## Privacy policy
+
+PawBrowse is built to collect nothing. Full policy: **[PRIVACY.md](PRIVACY.md)**. In short:
+
+- **Collection / use:** PawBrowse has no AI model, no account, no API key, and **no telemetry or
+  analytics**. Page content it reads (element tables, page text) is returned only to the local AI
+  client you run, to fulfill your request.
+- **Storage:** the only thing stored is your **bridge port number**, in `chrome.storage.local` on
+  your machine. Page content is not persisted by the extension beyond the current operation.
+- **Sharing:** nothing is sent to the developer or any third-party server. All traffic stays on
+  `127.0.0.1` (localhost) between the extension and the server on your own computer.
+- **Retention:** none — there is no server-side data, so there is nothing to retain or delete.
+- **Contact:** questions or requests via [GitHub issues](https://github.com/ItaiZeilig/pawbrowse/issues).
+
 ## Notes & limits
 
 - Attaching shows Chrome's "PawBrowse is debugging this browser" banner — expected.
