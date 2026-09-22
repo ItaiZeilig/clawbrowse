@@ -265,9 +265,10 @@ PawBrowse is built to collect nothing. Full policy: **[PRIVACY.md](PRIVACY.md)**
   by one client at a time (e.g. Claude Code *or* Claude Desktop). A second client reports the port
   is in use via `browser_status` rather than failing hard; set a different `PAWBROWSE_PORT` per
   client if you need both.
-- **Not yet enumerated:** controls inside **shadow DOM** (web components) and **iframes** (same- or
-  cross-origin), plus canvas and file uploads. On heavily component-based sites some controls may
-  not appear in the element table yet — `click_text` can sometimes reach them.
+- **Shadow DOM and same-origin iframes are enumerated** (v0.4.0): controls inside open shadow roots
+  (web components) and same-origin iframes appear in the element table and are clickable/typable by
+  ref. **Not yet:** cross-origin iframes (the browser blocks JS access to them), canvas, and file
+  uploads.
 
 ## Contributing
 

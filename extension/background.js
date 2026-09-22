@@ -167,7 +167,8 @@ const SNAPSHOT = `(function(){
     seen=seen||new Set();
     if(!e||seen.has(e)) return '';
     seen.add(e);
-    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map(function(id){return name(document.getElementById(id),seen);}).filter(Boolean).join(' ');
+    var rt=(e.getRootNode&&e.getRootNode())||document; var gid=function(id){try{return rt.getElementById?rt.getElementById(id):document.getElementById(id);}catch(_){return null;}};
+    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map(function(id){return name(gid(id),seen);}).filter(Boolean).join(' ');
     if(ref) return ref;
     if(e.getAttribute('aria-label')) return e.getAttribute('aria-label');
     var labs=[].slice.call(e.labels||[]).map(function(l){return name(l,seen);}).filter(Boolean).join(' ');
@@ -202,12 +203,39 @@ const SNAPSHOT = `(function(){
   // control (relabel), while tolerating benign value/checked/expanded churn and same-element
   // multi-op batches.
   cache.guard=function(el){ if(!el) return ''; try{ return [role(el),(name(el)||'').replace(/\\s+/g,' ').trim()].join(String.fromCharCode(1)); }catch(_){ return ''; } };
-  var actions=[], nodes=document.querySelectorAll(selector);
+  // Collect actionable elements across the top document, OPEN shadow roots, and SAME-ORIGIN
+  // iframes. dx/dy translate each element's frame-local rect into top-level viewport coordinates
+  // (shadow roots share the frame's coords so dx/dy carry through unchanged; iframes add offset).
+  function collect(){
+    var out=[];
+    function walk(root, dx, dy, depth){
+      if(depth>12) return;
+      var els; try{ els=root.querySelectorAll(selector); }catch(_){ els=[]; }
+      for(var a=0;a<els.length;a++) out.push({el:els[a], dx:dx, dy:dy});
+      var all; try{ all=root.querySelectorAll('*'); }catch(_){ all=[]; }
+      for(var b=0;b<all.length;b++){
+        var n=all[b];
+        if(n.shadowRoot) walk(n.shadowRoot, dx, dy, depth+1);
+        if(n.tagName==='IFRAME'){ try{
+          var idoc=n.contentDocument;
+          if(idoc && idoc.body){
+            var ir=n.getBoundingClientRect(), cs=(n.ownerDocument.defaultView||window).getComputedStyle(n);
+            walk(idoc,
+              dx+ir.left+(parseFloat(cs.borderLeftWidth)||0)+(parseFloat(cs.paddingLeft)||0),
+              dy+ir.top+(parseFloat(cs.borderTopWidth)||0)+(parseFloat(cs.paddingTop)||0), depth+1);
+          }
+        }catch(_){} }
+      }
+    }
+    walk(document, 0, 0, 0);
+    return out;
+  }
+  var actions=[], nodes=collect();
   for(var i=0;i<nodes.length;i++){
-    var e=nodes[i];
+    var e=nodes[i].el, ox=nodes[i].dx, oy=nodes[i].dy;
     try{
     if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
-    var r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
+    var r=e.getBoundingClientRect(), x=r.x+r.width/2+ox, y=r.y+r.height/2+oy, rname=role(e);
     if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     var base={node:identity(e), role:rname, label:(name(e)||rname).replace(/\\s+/g,' ').trim().slice(0,120), x:Math.round(x), y:Math.round(y)};
@@ -319,9 +347,22 @@ async function resolveHit(tabId, ref, opts) {
     if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {error:'element not visible'};
     e.scrollIntoView({block:'center',inline:'center'});
     var r=e.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
-    var x=Math.round(r.x+r.width/2), y=Math.round(r.y+r.height/2);
+    // Frame-local center (in the element's own frame viewport)...
+    var lx=r.x+r.width/2, ly=r.y+r.height/2;
+    // ...plus the offset chain of any ancestor iframes, giving the TOP-LEVEL click point for CDP.
+    var dx=0, dy=0, w=(e.ownerDocument&&e.ownerDocument.defaultView), g=0;
+    while(w && w.frameElement && g++<12){
+      var fe=w.frameElement, fr=fe.getBoundingClientRect(), fcs=fe.ownerDocument.defaultView.getComputedStyle(fe);
+      dx+=fr.left+(parseFloat(fcs.borderLeftWidth)||0)+(parseFloat(fcs.paddingLeft)||0);
+      dy+=fr.top+(parseFloat(fcs.borderTopWidth)||0)+(parseFloat(fcs.paddingTop)||0);
+      w=fe.ownerDocument.defaultView;
+    }
+    var x=Math.round(lx+dx), y=Math.round(ly+dy);
     if(x<0||y<0||x>=innerWidth||y>=innerHeight) return {error:'element off-screen after scroll'};
-    if(!e.contains(document.elementFromPoint(x,y))) return {error:'element is covered by another element'};
+    // Hit-test in the element's OWN root (document / shadow root / iframe doc) using frame-local
+    // coords, so shadow-DOM and iframe elements aren't falsely reported as covered.
+    var root=e.getRootNode(); var efp=(root&&root.elementFromPoint)?root.elementFromPoint(lx,ly):document.elementFromPoint(lx,ly);
+    if(!e.contains(efp)) return {error:'element is covered by another element'};
     return {x:x, y:y};
   })()`);
 }

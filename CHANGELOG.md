@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-22
+
+### Added
+- **Shadow DOM traversal.** The element table now enumerates controls inside **open shadow roots**
+  (web components), and they're clickable/typable by ref — sites built on custom elements
+  (YouTube-style, many enterprise apps) are no longer invisible. Accessible-name resolution and
+  hit-testing are shadow-aware (name resolves `aria-labelledby` within the element's root;
+  occlusion is checked with the element's own `getRootNode().elementFromPoint`).
+- **Same-origin iframe traversal.** Controls inside same-origin iframes are enumerated, with their
+  rects translated into top-level viewport coordinates (accumulated across nested frames) so clicks
+  and typing land correctly. Cross-origin iframes remain inaccessible (browser-enforced).
+
+Verified live: shadow-DOM input + button and a same-origin iframe button were perceived, typed into,
+and clicked on a controlled test page; light-DOM perception unchanged (no regression).
+
 ## [0.3.4] - 2026-09-22
 
 Release-readiness hardening from a three-part production review (extension, MCP server, packaging).
