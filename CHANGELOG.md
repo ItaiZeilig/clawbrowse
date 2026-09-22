@@ -35,6 +35,14 @@ Release-readiness hardening from a three-part production review (extension, MCP 
   defaults), return `-32602` for a malformed `tools/call`, and add last-resort
   `uncaughtException`/`unhandledRejection` guards so a stray throw can't drop the bridge.
 
+### Tests
+- Replaced the single round-trip script with a **21-case adversarial suite** (`node --test`, still
+  zero-dependency): MCP protocol (initialize/tools/list/annotations/ping/`-32601`/`-32602`/unknown
+  tool/notifications), no-extension errors, round-trip + error propagation + out-of-order id
+  correlation, and regressions for every fix above (disconnect fast-fail, last-wins takeover,
+  port-in-use stays alive, bad env vars) — plus raw-socket attacks (web-origin rejection, oversized
+  frame, malformed control frame, non-JSON garbage) and stdin-close shutdown.
+
 ### Known limitations (documented, not yet supported)
 - Controls inside **shadow DOM** and **same-origin iframes** are not yet enumerated; the bridge
   trusts any **local process** on `127.0.0.1` (no shared token yet). See the README.
