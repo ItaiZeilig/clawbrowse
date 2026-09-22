@@ -41,9 +41,9 @@ your browser) plus a tiny **local server** your AI client runs — both install 
 
 [![Add to Chrome](https://img.shields.io/badge/Add%20to-Chrome-4285F4?logo=googlechrome&logoColor=white&style=for-the-badge)](https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe)
 
-> 🚧 The Web Store listing is in review. Until it's live, load it in 30 seconds: clone this repo,
-> open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the
-> `extension/` folder.
+> Live on the **[Chrome Web Store](https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe)** — one click, done.
+> Prefer to run from source (contributors, or the very latest)? Clone this repo, open
+> `chrome://extensions`, turn on **Developer mode**, **Load unpacked**, and pick the `extension/` folder.
 
 ### 2 — Connect your AI client (one time)
 
