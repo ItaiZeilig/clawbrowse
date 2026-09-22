@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-23
+
+### Fixed
+- **Custom/framework buttons are no longer invisible to the element table.** Apps built with
+  React-Native-Web (and many design systems) render buttons as role-less `<div>`s that only carry
+  `cursor: pointer` and/or `tabindex="0"` — so a submit/confirm button could be on screen yet
+  absent from the observed controls. Perception now also enumerates these interactive elements:
+  any `[contenteditable]`, an inline `onclick`, a keyboard-focusable `[tabindex]`, and elements
+  whose computed `cursor` is `pointer` (captured at the root of each pointer region so we get the
+  pressable, not its inherited-cursor text children). Guarded against noise: a candidate must have
+  an accessible name and must not merely wrap another real control; the pointer scan is bounded so
+  large pages stay fast. Also broadened the ARIA-role set (adds `slider`, `treeitem`,
+  `menuitemcheckbox`) and fixed `contenteditable` matching (`""`/`plaintext-only`, not just
+  `"true"`). Found via a real driver app whose "אשר" (confirm) and "manual entry" buttons were
+  role-less `<div tabindex="0">` pressables; verified live that they now surface as clickable refs.
+
 ## [0.5.0] - 2026-09-22
 
 ### Added — multiple concurrent sessions (broker + per-session tab groups)
@@ -243,7 +259,8 @@ Perception + reliability overhaul, adapting techniques from
 - Options page to configure the bridge port and check connection status.
 - End-to-end round-trip test (`npm test`) and CI.
 
-[Unreleased]: https://github.com/ItaiZeilig/pawbrowse/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/ItaiZeilig/pawbrowse/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.5.1
 [0.5.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.5.0
 [0.4.0]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.4.0
 [0.3.4]: https://github.com/ItaiZeilig/pawbrowse/releases/tag/v0.3.4

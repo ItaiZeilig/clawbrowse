@@ -218,7 +218,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'pawbrowse', version: '0.5.0' },
+        serverInfo: { name: 'pawbrowse', version: '0.5.1' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply

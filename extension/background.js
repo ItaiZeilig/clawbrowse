@@ -327,8 +327,11 @@ const SNAPSHOT = `(function(){
     if(txt) return txt;
     return e.getAttribute('title')||e.getAttribute('placeholder')||'';
   }
-  var roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio','option','gridcell','combobox','textbox','searchbox','spinbutton'];
-  var selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
+  var roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio','menuitemcheckbox','option','gridcell','combobox','textbox','searchbox','spinbutton','slider','treeitem'];
+  // Semantic controls + custom clickables: any contenteditable, an inline onclick, or a
+  // keyboard-focusable [tabindex] (framework buttons — React-Native-Web Pressables, design-system
+  // divs — often expose only these). cursor:pointer clickables are added separately in collect().
+  var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[tabindex]:not([tabindex="-1"]),'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
   function role(e){
     var explicit=e.getAttribute('role');
     if(roles.indexOf(explicit)>=0) return explicit;
@@ -355,14 +358,29 @@ const SNAPSHOT = `(function(){
   // iframes. dx/dy translate each element's frame-local rect into top-level viewport coordinates
   // (shadow roots share the frame's coords so dx/dy carry through unchanged; iframes add offset).
   function collect(){
-    var out=[];
+    var out=[], seen=new Set(), scanned=0;
+    function add(el, dx, dy, clk){ if(seen.has(el)) return; seen.add(el); out.push({el:el, dx:dx, dy:dy, clk:clk}); }
     function walk(root, dx, dy, depth){
       if(depth>12) return;
       var els; try{ els=root.querySelectorAll(selector); }catch(_){ els=[]; }
-      for(var a=0;a<els.length;a++) out.push({el:els[a], dx:dx, dy:dy});
+      for(var a=0;a<els.length;a++) add(els[a], dx, dy, false);
       var all; try{ all=root.querySelectorAll('*'); }catch(_){ all=[]; }
       for(var b=0;b<all.length;b++){
         var n=all[b];
+        // Custom/framework clickables (e.g. React-Native-Web Pressable/Touchable, many design
+        // systems) render as role-less <div>s but get cursor:pointer. Include the ROOT of each
+        // pointer region (its parent is NOT pointer) so we capture the pressable itself, not its
+        // inherited-cursor text children. Bounded scan so huge DOMs stay fast.
+        if(!seen.has(n) && scanned<8000){
+          scanned++;
+          try{
+            var view=(n.ownerDocument&&n.ownerDocument.defaultView)||window;
+            if(view.getComputedStyle(n).cursor==='pointer'){
+              var pe=n.parentElement;
+              if(!pe || view.getComputedStyle(pe).cursor!=='pointer') add(n, dx, dy, true);
+            }
+          }catch(_){}
+        }
         if(n.shadowRoot) walk(n.shadowRoot, dx, dy, depth+1);
         if(n.tagName==='IFRAME'){ try{
           var idoc=n.contentDocument;
@@ -380,10 +398,20 @@ const SNAPSHOT = `(function(){
   }
   var actions=[], nodes=collect();
   for(var i=0;i<nodes.length;i++){
-    var e=nodes[i].el, ox=nodes[i].dx, oy=nodes[i].dy;
+    var e=nodes[i].el, ox=nodes[i].dx, oy=nodes[i].dy, clk=nodes[i].clk;
     try{
     if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
     var r=e.getBoundingClientRect(), x=r.x+r.width/2+ox, y=r.y+r.height/2+oy, rname=role(e);
+    if(!rname){
+      // Role-less custom clickable (cursor:pointer, inline onclick, or focusable [tabindex]).
+      // Only accept it if it has a real label and isn't just a wrapper around an actual control,
+      // so we don't flood the table with layout containers.
+      var ti=e.getAttribute('tabindex');
+      if(clk || e.hasAttribute('onclick') || (ti!==null && ti!=='-1')){
+        if(!(name(e)||'').trim() || e.querySelector(selector)) continue;
+        rname='button';
+      }
+    }
     if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     var base={node:identity(e), role:rname, label:(name(e)||rname).replace(/\\s+/g,' ').trim().slice(0,120), x:Math.round(x), y:Math.round(y)};
