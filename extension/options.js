@@ -27,7 +27,10 @@ document.getElementById('save').addEventListener('click', async () => {
   const port = Number(portEl.value) || 10577;
   await chrome.storage.local.set({ port });
   statusEl.textContent = 'Saved. Reconnecting…';
-  setTimeout(refreshStatus, 800);
+  // Tell the worker to drop the old socket and reconnect on the new port (otherwise it would
+  // keep using the old port until that socket happens to close).
+  try { chrome.runtime.sendMessage({ type: 'reconnect' }, () => { void chrome.runtime.lastError; }); } catch {}
+  setTimeout(refreshStatus, 1200);
 });
 
 load();

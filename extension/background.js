@@ -38,16 +38,21 @@ async function connect() {
     if (!msg.cmd) return;
     const sock = ws;
     // Run one command at a time; overlapping calls queue instead of racing the shared debugger.
-    // Each command is bounded so a single hang can never wedge the whole queue — the chain
-    // always advances (the underlying work may leak, but subsequent commands still run).
+    // Each command is bounded by a 25s timeout AND a cancellation token: when the timeout fires
+    // the token is set so multi-step commands (act/navigate) stop issuing further CDP ops instead
+    // of leaking work that races the next command.
+    const token = { cancelled: false };
     cmdChain = cmdChain.then(async () => {
+      let timer;
       try {
         const result = await Promise.race([
-          handleCommand(msg.cmd, msg.args || {}),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('command timed out in extension after 25s')), 25000)),
+          handleCommand(msg.cmd, msg.args || {}, token),
+          new Promise((_, rej) => { timer = setTimeout(() => { token.cancelled = true; rej(new Error('command timed out in extension after 25s')); }, 25000); }),
         ]);
+        clearTimeout(timer);
         sock.send(JSON.stringify({ id: msg.id, ok: true, result }));
       } catch (e) {
+        clearTimeout(timer);
         try { sock.send(JSON.stringify({ id: msg.id, ok: false, error: String(e && e.message || e) })); } catch {}
       }
     });
@@ -118,12 +123,26 @@ async function activeTab() {
   return t || null;
 }
 
+// Browser-internal pages and the Web Store forbid CDP/debugger driving. Applied to BOTH the
+// active tab and an explicitly-passed tabId so neither path can attach to a restricted page.
+function restrictedPage(url) {
+  url = url || '';
+  return /^(chrome|edge|about|devtools|chrome-extension|view-source):/i.test(url)
+    || /^https?:\/\/chromewebstore\.google\.com/i.test(url)
+    || /^https?:\/\/chrome\.google\.com\/webstore/i.test(url);
+}
+
 async function resolveTabId(args) {
-  if (args.tabId != null) return args.tabId;
-  const t = await activeTab();
-  if (!t) throw new Error('no active tab found');
-  if (/^(chrome|edge|about|devtools|chrome-extension):/i.test(t.url || '')) {
-    throw new Error(`the active tab (${t.url}) is a browser page that cannot be driven; switch to a normal web page`);
+  let t;
+  if (args.tabId != null) {
+    try { t = await chrome.tabs.get(args.tabId); }
+    catch { throw new Error(`tab ${args.tabId} not found (list tabs with browser_tabs)`); }
+  } else {
+    t = await activeTab();
+    if (!t) throw new Error('no active tab found');
+  }
+  if (restrictedPage(t.url)) {
+    throw new Error(`that tab (${t.url}) is a browser page that cannot be driven; use a normal web page`);
   }
   return t.id;
 }
@@ -213,19 +232,27 @@ const SNAPSHOT = `(function(){
     }
     }catch(_){ continue; }
   }
-  var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
-  while((node=walker.nextNode()) && length<4000){
-    var v=node.textContent.trim(), p=node.parentElement;
-    if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
-    range.selectNodeContents(node); var tr=range.getBoundingClientRect();
-    if(tr.width>0&&tr.height>0&&tr.bottom>0&&tr.top<innerHeight&&tr.right>0&&tr.left<innerWidth){ words.push(v); length+=v.length; }
-  }
-  var text=words.join('\\n').slice(0,4000);
+  // Page text is a best-effort extra — a failure here must NOT discard the element table
+  // we already computed above.
+  var text='';
+  try{
+    var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
+    while((node=walker.nextNode()) && length<4000){
+      var v=node.textContent.trim(), p=node.parentElement;
+      if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
+      range.selectNodeContents(node); var tr=range.getBoundingClientRect();
+      if(tr.width>0&&tr.height>0&&tr.bottom>0&&tr.top<innerHeight&&tr.right>0&&tr.left<innerWidth){ words.push(v); length+=v.length; }
+    }
+    text=words.join('\\n').slice(0,4000);
+  }catch(_){ text=''; }
   var omitted=Math.max(0, actions.length-250); actions.splice(250);
   // Displayed id derives from the STABLE node id (not position), so a reused number can never
   // remap to a different element across observations; duplicates (e.g. combobox Open) get a suffix.
-  cache.byId={}; cache.guards={}; var used={};
-  for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); }
+  // Guarded so a getter/DOM quirk while building ids can't blank the whole table.
+  try{
+    cache.byId={}; cache.guards={}; var used={};
+    for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); }
+  }catch(_){}
   return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), text:text, omitted:omitted, actions:actions};
   }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, text:'', omitted:0, actions:[]}; }
 })()`;
@@ -403,7 +430,14 @@ async function runOp(tabId, op) {
       // Select-all then insert — robust for React/controlled inputs.
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2, commands: ['selectAll'] });
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2 });
-      await sendCdp(tabId, 'Input.insertText', { text: String(op.text ?? '') });
+      const txt = String(op.text ?? '');
+      if (txt === '') {
+        // insertText('') is a no-op in many inputs; Backspace deletes the selected contents.
+        await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...KEYMAP.Backspace });
+        await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...KEYMAP.Backspace });
+      } else {
+        await sendCdp(tabId, 'Input.insertText', { text: txt });
+      }
       await waitForOptions(tabId, op.ref, 250); // let autocomplete suggestions render
       return `type ${op.ref}`;
     }
@@ -456,7 +490,8 @@ async function runOp(tabId, op) {
 
 /* ------------------------------ Command router ---------------------------- */
 
-async function handleCommand(cmd, args) {
+async function handleCommand(cmd, args, token) {
+  const aborted = () => token && token.cancelled;
   switch (cmd) {
     case 'doctor': {
       const t = await activeTab();
@@ -473,12 +508,18 @@ async function handleCommand(cmd, args) {
     }
     case 'navigate': {
       const tabId = await resolveTabId(args);
+      let url = String(args.url || '').trim();
+      if (!url) throw new Error('navigate needs a url');
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url; // bare domain -> https
+      if (!/^https?:\/\//i.test(url)) throw new Error(`navigate only supports http(s) URLs (refusing "${url.split(':')[0]}:")`);
       await attach(tabId);
-      await sendCdp(tabId, 'Page.navigate', { url: args.url });
+      await sendCdp(tabId, 'Page.navigate', { url });
+      await sleep(350); // let the new document commit before polling, so we don't read the old page
       for (let i = 0; i < 75; i++) {
-        await sleep(200);
+        if (aborted()) break;
         const rs = await evaluate(tabId, 'document.readyState').catch(() => null);
         if (rs === 'complete') break;
+        await sleep(200);
       }
       await settle(tabId, 400);
       return observe(tabId);
@@ -503,6 +544,7 @@ async function handleCommand(cmd, args) {
       const before = await evaluate(tabId, SIG).catch(() => null);
       const logLines = [];
       for (const op of ops) {
+        if (aborted()) { logLines.push('  (aborted: command timed out; remaining ops not run)'); break; }
         try { logLines.push('  ' + await runOp(tabId, op)); }
         catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
         await settle(tabId, 250);
@@ -551,7 +593,16 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'pawbrowse-keepalive')
 // Let the options page read live connection status without opening a competing socket
 // (which the bridge's single-connection guard would reject).
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg && msg.type === 'status') { sendResponse({ connected: !!(ws && ws.readyState === WebSocket.OPEN) }); }
+  if (msg && msg.type === 'status') { sendResponse({ connected: !!(ws && ws.readyState === WebSocket.OPEN) }); return true; }
+  if (msg && msg.type === 'reconnect') {
+    // The options page changed the port: drop the current socket and reconnect on the new one.
+    try { if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; } } catch {}
+    try { if (ws) ws.close(); } catch {}
+    ws = null;
+    connect();
+    sendResponse({ ok: true });
+    return true;
+  }
   return true;
 });
 connect();

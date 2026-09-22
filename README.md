@@ -226,9 +226,14 @@ PawBrowse was hardened through two multi-agent code audits **and** live testing 
 
 - **No data leaves your machine.** There's no model and no API key; page content goes only to the
   agent you run locally. `password`, `file`, and `hidden` inputs are excluded and never exposed.
+  (Other visible fields — e.g. text inputs — *are* part of the element table, so treat what's on
+  screen as visible to your agent.)
 - **Local-only bridge.** The WebSocket binds to `127.0.0.1`, rejects non-`chrome-extension://`
-  origins (so a web page can't connect), trusts only the current extension socket, and caps inbound
-  frame size.
+  origins (so a web page can't connect), trusts only the current extension socket, caps inbound
+  frame size, and rejects malformed/oversized frames. **Trust model:** the bridge trusts any
+  *local* process on `127.0.0.1` (there's no shared token yet), so it assumes other software on
+  your machine is trusted — the same assumption as most localhost dev tools. A per-pair token is
+  planned hardening.
 - **One powerful permission, no host permissions.** The extension declares `debugger` (plus `tabs`,
   `storage`, `alarms`) and **no** host permissions — `chrome.debugger` doesn't need them. That's the
   same capability class as any real-browser agent; use it deliberately.
@@ -256,7 +261,13 @@ PawBrowse is built to collect nothing. Full policy: **[PRIVACY.md](PRIVACY.md)**
 - One debugger client per tab: a tab with DevTools open (or driven by another extension) can't be
   attached — switch tabs or close DevTools.
 - `chrome://`, the Chrome Web Store, and other browser pages can't be driven.
-- No cross-origin iframe traversal, canvas, or file uploads yet.
+- **One active client at a time.** The bridge is a single localhost port, so PawBrowse can be driven
+  by one client at a time (e.g. Claude Code *or* Claude Desktop). A second client reports the port
+  is in use via `browser_status` rather than failing hard; set a different `PAWBROWSE_PORT` per
+  client if you need both.
+- **Not yet enumerated:** controls inside **shadow DOM** (web components) and **iframes** (same- or
+  cross-origin), plus canvas and file uploads. On heavily component-based sites some controls may
+  not appear in the element table yet — `click_text` can sometimes reach them.
 
 ## Contributing
 

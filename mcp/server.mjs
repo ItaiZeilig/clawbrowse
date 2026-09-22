@@ -12,9 +12,10 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 
-const PORT = Number(process.env.PAWBROWSE_PORT || 10577);
+const posInt = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : d; };
+const PORT = posInt(process.env.PAWBROWSE_PORT, 10577);
 const HOST = '127.0.0.1';
-const CMD_TIMEOUT_MS = Number(process.env.PAWBROWSE_TIMEOUT_MS || 30000);
+const CMD_TIMEOUT_MS = posInt(process.env.PAWBROWSE_TIMEOUT_MS, 30000);
 const MAX_FRAME = 8 * 1024 * 1024; // reject oversized inbound frames (DoS guard)
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -27,11 +28,20 @@ const log = (...a) => process.stderr.write(`[pawbrowse] ${a.join(' ')}\n`);
 let extension = null;          // the currently connected extension socket wrapper
 const pending = new Map();     // id -> { resolve, reject, timer }
 let nextId = 1;
+let bridgeError = null;        // set if the bridge can't listen (e.g. port in use)
+
+// Reject every in-flight command at once (extension disconnected / replaced), so a tool
+// call fails fast with a clear reason instead of hanging until CMD_TIMEOUT_MS.
+function failAllPending(reason) {
+  for (const [, p] of pending) { clearTimeout(p.timer); try { p.reject(new Error(reason)); } catch {} }
+  pending.clear();
+}
 
 function makeWs(socket) {
   let buf = Buffer.alloc(0);
   let fragOpcode = null;
   let fragChunks = [];
+  let fragLen = 0;
 
   const send = (str) => {
     const payload = Buffer.from(str, 'utf8');
@@ -81,6 +91,7 @@ function makeWs(socket) {
         if (buf.length < offset + 4) return;
         mask = buf.slice(offset, offset + 4); offset += 4;
       }
+      if ((opcode & 0x8) && (len > 125 || !fin)) { log('malformed control frame; closing'); socket.destroy(); return; }
       if (len > MAX_FRAME) { log(`frame too large (${len} bytes); closing`); socket.destroy(); return; }
       if (buf.length < offset + len) return;
       let payload = buf.slice(offset, offset + len);
@@ -95,13 +106,14 @@ function makeWs(socket) {
       if (opcode === 0x9) { sendCtl(0xA, payload); continue; }          // ping -> pong
       if (opcode === 0xA) { continue; }                                 // pong
       if (opcode === 0x0) {                                             // continuation
-        fragChunks.push(payload);
-        if (fin) { handleMessage(Buffer.concat(fragChunks).toString('utf8'), self); fragOpcode = null; fragChunks = []; }
+        fragChunks.push(payload); fragLen += len;
+        if (fragLen > MAX_FRAME) { log('fragmented message too large; closing'); socket.destroy(); return; }
+        if (fin) { handleMessage(Buffer.concat(fragChunks).toString('utf8'), self); fragOpcode = null; fragChunks = []; fragLen = 0; }
         continue;
       }
       if (opcode === 0x1 || opcode === 0x2) {                           // text / binary
         if (fin) { handleMessage(payload.toString('utf8'), self); }
-        else { fragOpcode = opcode; fragChunks = [payload]; }
+        else { fragOpcode = opcode; fragChunks = [payload]; fragLen = len; }
         continue;
       }
     }
@@ -127,7 +139,7 @@ function handleMessage(text, wsObj) {
 
 function callExtension(cmd, args = {}) {
   return new Promise((resolve, reject) => {
-    if (!extension) { reject(new Error('No Chrome extension connected. Load the pawbrowse extension in Chrome and make sure it shows "connected".')); return; }
+    if (!extension) { reject(new Error(bridgeError || 'No Chrome extension connected. Load the pawbrowse extension in Chrome and make sure it shows "connected".')); return; }
     const id = nextId++;
     const timer = setTimeout(() => { pending.delete(id); reject(new Error(`command "${cmd}" timed out after ${CMD_TIMEOUT_MS}ms`)); }, CMD_TIMEOUT_MS);
     pending.set(id, { resolve, reject, timer });
@@ -163,8 +175,12 @@ httpServer.on('upgrade', (req, socket) => {
   );
   const ws = makeWs(socket);
   extension = ws;
-  if (prev && prev.socket && prev.socket !== socket) { try { prev.socket.destroy(); } catch {} log('replaced previous extension connection'); }
-  socket.on('close', () => { if (extension === ws) { extension = null; log('extension disconnected'); } });
+  if (prev && prev.socket && prev.socket !== socket) {
+    try { prev.socket.destroy(); } catch {}
+    failAllPending('extension reconnected (previous connection replaced)');
+    log('replaced previous extension connection');
+  }
+  socket.on('close', () => { if (extension === ws) { extension = null; failAllPending('extension disconnected mid-command'); log('extension disconnected'); } });
   socket.on('error', () => {});
 });
 
@@ -172,12 +188,15 @@ httpServer.on('upgrade', (req, socket) => {
 setInterval(() => { if (extension && extension.ping) extension.ping(); }, 10000).unref?.();
 
 httpServer.on('error', (e) => {
+  // Don't kill the MCP (stdio) side — keep answering the client so it can report a clear
+  // reason instead of showing "server failed / all tools unavailable". The bridge just
+  // won't accept the extension until the conflict clears.
   if (e.code === 'EADDRINUSE') {
-    log(`ERROR: port ${PORT} is already in use — a previous pawbrowse server may still be running. Exiting.`);
-    process.exit(1);
+    bridgeError = `PawBrowse can't use port ${PORT} — another PawBrowse instance (e.g. another editor or Claude client) is already running the bridge. Only one client can drive the browser at a time. Close the other one, or set a different PAWBROWSE_PORT for this client.`;
+  } else {
+    bridgeError = `PawBrowse bridge error: ${e.message}`;
   }
-  log(`bridge error: ${e.message}`);
-  process.exit(1);
+  log(bridgeError);
 });
 httpServer.listen(PORT, HOST, () => log(`bridge listening on ws://${HOST}:${PORT}`));
 
@@ -239,6 +258,7 @@ async function callTool(name, args) {
   switch (name) {
     case 'browser_status': {
       const base = { bridge: `ws://${HOST}:${PORT}`, extension_connected: !!extension };
+      if (bridgeError) base.bridge_error = bridgeError;
       if (!extension) return textResult(base);
       try { const d = await callExtension('doctor', {}); return textResult({ ...base, ...d }); }
       catch (e) { return textResult({ ...base, note: e.message }); }
@@ -263,7 +283,7 @@ async function handleRpc(msg) {
       reply(id, {
         protocolVersion: params?.protocolVersion || '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'pawbrowse', version: '0.3.3' },
+        serverInfo: { name: 'pawbrowse', version: '0.3.4' },
       });
     } else if (method === 'notifications/initialized' || method === 'initialized') {
       // notification, no reply
@@ -272,11 +292,15 @@ async function handleRpc(msg) {
     } else if (method === 'tools/list') {
       reply(id, { tools: TOOLS });
     } else if (method === 'tools/call') {
-      try {
-        const result = await callTool(params.name, params.arguments || {});
-        reply(id, result);
-      } catch (e) {
-        reply(id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
+      if (!params || typeof params.name !== 'string') {
+        replyError(id, -32602, 'Invalid params: tools/call requires a tool "name"');
+      } else {
+        try {
+          const result = await callTool(params.name, params.arguments || {});
+          reply(id, result);
+        } catch (e) {
+          reply(id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
+        }
       }
     } else if (id !== undefined && id !== null) {
       replyError(id, -32601, `method not found: ${method}`);
@@ -305,5 +329,10 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => process.exit(0));
 process.stdin.on('close', () => process.exit(0));
 process.stdout.on('error', (e) => { if (e.code === 'EPIPE') process.exit(0); });
+
+// Last-resort guards: an unexpected throw in a socket/data callback shouldn't take the
+// whole bridge down. Log and keep serving.
+process.on('uncaughtException', (e) => log(`uncaughtException: ${(e && e.stack) || e}`));
+process.on('unhandledRejection', (e) => log(`unhandledRejection: ${(e && e.stack) || e}`));
 
 log('MCP server ready (stdio)');

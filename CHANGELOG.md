@@ -6,6 +6,39 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-22
+
+Release-readiness hardening from a three-part production review (extension, MCP server, packaging).
+
+### Fixed
+- **Timed-out commands can no longer leak and race the next one.** A large `act` batch that hit
+  the 25s bound used to keep running after the queue advanced, issuing CDP against the tab
+  concurrently with the following command (and risking double execution on agent retry). Commands
+  now carry a cancellation token; `act`/`navigate` stop issuing further ops once it fires.
+- **In-flight tool calls no longer hang for the full timeout when the extension disconnects.** The
+  MCP server now rejects all pending requests immediately when the extension socket closes or is
+  replaced, instead of waiting out `CMD_TIMEOUT_MS`.
+- **Port-in-use no longer kills the MCP server.** If another PawBrowse instance already owns the
+  bridge port, the stdio server stays up and reports a clear reason via `browser_status` /tool
+  errors, rather than the client showing "server failed / all tools unavailable".
+- **An explicitly-passed `tabId` is now validated** against restricted pages (`chrome://`,
+  `devtools://`, the Chrome Web Store, …), same as the active-tab path; `navigate` only accepts
+  http(s) URLs (bare domains are prefixed with `https://`), refusing `javascript:`/`chrome:` targets.
+- **A throw in the page-text walker or id-building no longer blanks the element table** — those
+  steps are wrapped so the already-computed controls are still returned.
+- **Options "Save & reconnect" now actually reconnects** on a port change (previously it kept the
+  old socket until it happened to drop).
+- **Clearing a field works** (`type` with empty text now sends Backspace after select-all instead
+  of a no-op `insertText('')`).
+- WebSocket bridge hardening: reject malformed/oversized control frames, cap reassembled
+  fragmented messages, validate `PAWBROWSE_PORT`/`PAWBROWSE_TIMEOUT_MS` (bad values fall back to
+  defaults), return `-32602` for a malformed `tools/call`, and add last-resort
+  `uncaughtException`/`unhandledRejection` guards so a stray throw can't drop the bridge.
+
+### Known limitations (documented, not yet supported)
+- Controls inside **shadow DOM** and **same-origin iframes** are not yet enumerated; the bridge
+  trusts any **local process** on `127.0.0.1` (no shared token yet). See the README.
+
 ## [0.3.3] - 2026-09-22
 
 Follow-ups from live testing + grounding the approach in the CDP/MV3 docs (rather than guessing).

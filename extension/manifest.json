@@ -1,11 +1,19 @@
 {
   "manifest_version": 3,
   "name": "PawBrowse",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Let your AI agent (Claude Code) drive your real Chrome. Fast element-table control. Open source, no keys.",
   "minimum_chrome_version": "120",
-  "permissions": ["debugger", "tabs", "storage", "alarms"],
-  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": [
+    "debugger",
+    "tabs",
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
   "options_page": "options.html",
   "icons": {
     "16": "icons/icon-16.png",
