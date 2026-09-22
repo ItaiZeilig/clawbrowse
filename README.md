@@ -34,35 +34,50 @@ Claude Code ──stdio (MCP)──▶ mcp/server.mjs ──ws://127.0.0.1:10577
 
 ## Getting started
 
-PawBrowse has two small parts that work together: the **Chrome extension** (the hands + eyes in
-your browser) and a **local server** that your AI agent runs and talks to. You install the
-extension once, add the server to your agent with one line, and you're set.
+Two one-time steps, about 30 seconds. PawBrowse is a **Chrome extension** (the hands + eyes in
+your browser) plus a tiny **local server** your AI client runs — both install with a click.
 
-### Easy install (recommended)
+### 1 — Add the extension to Chrome
 
-1. **Install the extension** from the Chrome Web Store: **PawBrowse** — *🚧 in review; the link
-   will go here once it's live. Until then, use "From source" below.*
-2. **Add the server to Claude Code** — one line, nothing to clone:
-   ```bash
-   claude mcp add --scope user pawbrowse -- npx -y pawbrowse@latest
-   ```
-3. **Restart Claude Code.** That's it — ask it *"use pawbrowse: what's my browser status?"* and
-   you should see `extension_connected: true`. (The extension badge turns **green ●** when connected.)
+[![Add to Chrome](https://img.shields.io/badge/Add%20to-Chrome-4285F4?logo=googlechrome&logoColor=white&style=for-the-badge)](https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe)
 
-> Needs **Node.js ≥ 18** installed (for the one-line server) and **Claude Code** (or any MCP client).
+> 🚧 The Web Store listing is in review. Until it's live, load it in 30 seconds: clone this repo,
+> open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the
+> `extension/` folder.
 
-### From source (for contributors, or before the store listing is live)
+### 2 — Connect your AI client (one time)
+
+<p>
+<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=pawbrowse&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInBhd2Jyb3dzZUBsYXRlc3QiXX0="><img src="https://img.shields.io/badge/Add%20to-Cursor-000000?logo=cursor&logoColor=white&style=for-the-badge" alt="Add to Cursor"></a>
+<a href="https://vscode.dev/redirect/mcp/install?name=pawbrowse&config=%7B%22name%22%3A%22pawbrowse%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22pawbrowse%40latest%22%5D%7D"><img src="https://img.shields.io/badge/Install%20in-VS%20Code-007ACC?logo=visualstudiocode&logoColor=white&style=for-the-badge" alt="Install in VS Code"></a>
+</p>
+
+**Claude Code** — one line (it has no click-to-install, so paste this):
+
+```bash
+claude mcp add --scope user pawbrowse -- npx -y pawbrowse@latest
+```
+
+Then **fully restart your client** and ask: *"use pawbrowse: what's my browser status?"* — you
+should see `extension_connected: true`, and the extension badge turns **green ●**.
+
+> Needs **Node.js ≥ 18**. Works with Claude Code, Cursor, VS Code, or any MCP client — the one
+> button/line just tells your client to run `npx -y pawbrowse@latest`; nothing to clone or build.
+
+<details>
+<summary>From source (contributors, or before the Web Store listing is live)</summary>
 
 ```bash
 git clone https://github.com/ItaiZeilig/pawbrowse.git
 ```
-1. **Load the extension:** `chrome://extensions` → **Developer mode** (top-right) → **Load
-   unpacked** → pick the `pawbrowse/extension` folder.
+1. **Load the extension:** `chrome://extensions` → **Developer mode** → **Load unpacked** → pick
+   the `pawbrowse/extension` folder.
 2. **Register the server** with the full path to your clone:
    ```bash
    claude mcp add --scope user pawbrowse -- node /full/path/to/pawbrowse/mcp/server.mjs
    ```
 3. **Fully restart Claude Code** (not just `/mcp`), then run the status check above.
+</details>
 
 ## Using it
 
