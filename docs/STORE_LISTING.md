@@ -1,7 +1,7 @@
 # Chrome Web Store listing — PawBrowse
 
 Copy-paste content and a step-by-step for submitting the extension. Assets are in
-`assets/store/`, the upload package is `dist/pawbrowse-extension-v0.3.1.zip`.
+`assets/store/`, the upload package is `dist/pawbrowse-extension-v0.3.3.zip`.
 
 ---
 
@@ -117,7 +117,7 @@ The dashboard asks you to justify each permission. Use these:
 2. Go to the **Chrome Web Store Developer Dashboard**
    (https://chrome.google.com/webstore/devconsole), sign in, pay the **one-time US$5**
    registration fee, verify your contact email, and accept the developer agreement.
-3. Click **Add new item** → upload `dist/pawbrowse-extension-v0.3.1.zip`.
+3. Click **Add new item** → upload `dist/pawbrowse-extension-v0.3.3.zip`.
 4. Fill the **Store listing** tab with the name, summary, description, category, and URLs
    above; upload the icon, screenshot, and promo tiles from `assets/store/`.
 5. Fill the **Privacy practices** tab: single purpose, the permission justifications above,
