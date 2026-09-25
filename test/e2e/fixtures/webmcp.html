@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>WebMCP shop</title></head><body>
+<h1>Shop</h1><p id="out"></p>
+<form toolname="search_products" tooldescription="Search the catalog" id="sf"><input name="q" required><button>Go</button></form>
+<script>
+ const mc = navigator.modelContext || document.modelContext;
+ window.api = mc ? Object.getOwnPropertyNames(Object.getPrototypeOf(mc)).join(',') : 'none';
+ if (mc) mc.registerTool({ name: 'add_to_cart', description: 'Add a product to the cart by SKU', inputSchema: { type: 'object', properties: { sku: { type: 'string' }, qty: { type: 'number' } }, required: ['sku'] },
+   annotations: { readOnlyHint: false },
+   async execute({ sku, qty = 1 }) { document.getElementById('out').textContent = 'cart ' + sku + ' x' + qty; return { content: [{ type: 'text', text: 'Added ' + qty + ' of ' + sku }] }; } });
+</script></body></html>

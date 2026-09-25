@@ -66,7 +66,7 @@ class Cdp {
   close() { try { this.ws.close(); } catch {} }
 }
 
-export async function launch() {
+export async function launch(opts = {}) {
   const exe = chromePath();
   if (!exe) throw new Error('Chrome not found (set CHROME_PATH)');
   const server = await serve();
@@ -74,7 +74,7 @@ export async function launch() {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'pawbrowse-e2e-'));
   const proc = spawn(exe, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--window-size=1200,800', '--site-per-process',
-    ...(process.env.CI ? ['--no-sandbox'] : []), 'about:blank'],
+    ...(process.env.CI ? ['--no-sandbox'] : []), ...(process.env.PAW_CHROME_ARGS ? process.env.PAW_CHROME_ARGS.split(' ') : []), ...(opts.args || []), 'about:blank'],
   { stdio: 'ignore' });
   const portFile = path.join(profile, 'DevToolsActivePort');
   for (let i = 0; i < 100 && !fs.existsSync(portFile); i++) await sleep(100);
@@ -110,7 +110,7 @@ export async function launch() {
     for (const [tabId, t] of tabs) if (t.sessionId === m.sessionId) src = { tabId };
     if (!src && childToTab.has(m.sessionId)) src = { tabId: childToTab.get(m.sessionId), sessionId: m.sessionId };
     if (!src) return;
-    if (process.env.PAW_TRACE && /^Page\.|Target\.attached/.test(m.method) && !src.sessionId) console.error(Date.now() % 100000, m.method, JSON.stringify(m.params).slice(0, 140));
+    if (process.env.PAW_TRACE && /^Page\.|Target\.attached|^WebMCP/.test(m.method) && !src.sessionId) console.error(Date.now() % 100000, m.method, JSON.stringify(m.params).slice(0, 140));
     if (m.method === 'Target.attachedToTarget') childToTab.set(m.params.sessionId, src.tabId);
     for (const l of eventListeners) l(src, m.method, m.params);
   });

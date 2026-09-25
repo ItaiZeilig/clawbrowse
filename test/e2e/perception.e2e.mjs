@@ -525,3 +525,21 @@ test('pointer-driven custom slider drags by an offset', { skip }, async () => {
   const v = Number((await out()).replace('volume ', ''));
   assert.ok(v >= 45 && v <= 55, `volume ${v}`);
 });
+
+/* ---------------------------------- WebMCP ---------------------------------- */
+
+test('WebMCP: page tools (imperative + declarative) are listed and callable', { skip }, async () => {
+  const w = await launch({ args: ['--enable-features=WebMCPTesting'] });
+  try {
+    const t = await w.goto('webmcp.html');
+    assert.match(t, /tool add_to_cart\(sku\*: string, qty: number\) — Add a product to the cart by SKU/);
+    assert.match(t, /tool search_products\(q\*: string\)/);
+    const r = await w.act({ op: 'tool', name: 'add_to_cart', input: { sku: 'B-42', qty: 2 } });
+    assert.match(r, /tool add_to_cart: Completed\s+output \(untrusted page data\): Added 2 of B-42/);
+    assert.equal(await w.js(`document.getElementById('out').textContent`), 'cart B-42 x2');
+    const bad = await w.act({ op: 'tool', name: 'nope' });
+    assert.match(bad, /not offered by this page/);
+    const t2 = await w.goto('widgets.html');
+    assert.doesNotMatch(t2, /page tools/, 'tools must not leak to the next page');
+  } finally { await w.close(); }
+});

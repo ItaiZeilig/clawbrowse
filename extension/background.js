@@ -238,6 +238,8 @@ async function attach(tabId) {
   // Network events (no bodies buffered) let waits follow the page's real fetch/XHR activity.
   await sendCdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }).catch(() => {});
   try { const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree'); tabWatch(tabId).mainFrame = frameTree.frame.id; } catch {}
+  // WebMCP (sites exposing their own agent tools; Chrome 146+ behind a flag / origin trial).
+  await sendCdp(tabId, 'WebMCP.enable', {}).catch(() => {});
   // Cross-site iframes run in other renderer processes: attach to each as a flat child session.
   await sendCdp(tabId, 'Target.setAutoAttach', AUTO_ATTACH).catch(() => {});
   // Make the tab behave as focused even when it's a background tab, so focus/blur, rendering,
@@ -988,7 +990,7 @@ function tableBody(t) { return String(t).split('\n').map((l) => l.replace(/^(f\d
 async function observe(tabId) {
   const snap = await snapshot(tabId);
   if (snap) snap.frameSnaps = await readFrames(tabId, tabId, snap, []);
-  const t = formatTable(snap);
+  const t = formatTable(snap).replace('\n', `\n${formatTools(tabId)}`.replace(/\n$/, '') + '\n').replace(/\n\n/, '\n');
   lastTable.set(tabId, tableBody(t));
   return t;
 }
@@ -1307,6 +1309,65 @@ async function pressKey(tabId, combo) {
   return null;
 }
 
+/* ---------------------------------- WebMCP --------------------------------- *
+ * Pages that implement WebMCP (navigator.modelContext.registerTool / <form toolname>) describe
+ * their own actions with JSON schemas. Calling one is a single deterministic step instead of a
+ * dozen clicks, so observe lists them first and op "tool" invokes them via the WebMCP CDP domain. */
+const webTools = new Map();   // tabId -> Map(name -> { tool, where })
+const toolCalls = new Map();  // invocationId -> resolve
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source.tabId;
+  if (tabId == null) return;
+  const where = source.sessionId ? { tabId, sessionId: source.sessionId } : tabId;
+  if (method === 'WebMCP.toolsAdded') {
+    let m = webTools.get(tabId); if (!m) { m = new Map(); webTools.set(tabId, m); }
+    for (const t of params.tools || []) m.set(t.name, { tool: t, where });
+  } else if (method === 'WebMCP.toolsRemoved') {
+    const m = webTools.get(tabId);
+    for (const t of params.tools || params.toolNames || []) m?.delete(typeof t === 'string' ? t : t.name);
+  } else if (method === 'WebMCP.toolResponded') {
+    const done = toolCalls.get(params.invocationId);
+    if (done) { toolCalls.delete(params.invocationId); done(params); }
+  } else if (method === 'Page.frameNavigated' && !source.sessionId && !params.frame.parentId) {
+    webTools.delete(tabId); // a new document registers its own tools
+  }
+});
+
+function schemaSig(schema) {
+  const props = (schema && schema.properties) || {};
+  const req = new Set((schema && schema.required) || []);
+  return Object.entries(props).slice(0, 12).map(([k, v]) => `${k}${req.has(k) ? '*' : ''}: ${v && v.enum ? v.enum.slice(0, 6).join('|') : (v && v.type) || 'any'}`).join(', ');
+}
+
+function formatTools(tabId) {
+  const m = webTools.get(tabId);
+  if (!m || !m.size) return '';
+  const lines = [`page tools (WebMCP; call with {op:"tool",name,input}; * = required):`];
+  for (const { tool: t } of [...m.values()].slice(0, 30)) {
+    const a = t.annotations || {};
+    const flags = [a.readOnly || a.readOnlyHint ? 'read-only' : '', a.consequential ? 'consequential: confirm with the user first' : '', a.untrustedContent ? 'returns untrusted content' : ''].filter(Boolean).join('; ');
+    lines.push(`  tool ${t.name}(${schemaSig(t.inputSchema)}) — ${String(t.description || '').replace(/\s+/g, ' ').slice(0, 160)}${flags ? ` [${flags}]` : ''}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+async function invokeTool(tabId, name, input) {
+  const entry = webTools.get(tabId)?.get(name);
+  if (!entry) return `tool "${name}": not offered by this page (observe to list its tools)`;
+  let frameId = entry.tool.frameId;
+  if (!frameId) ({ frameTree: { frame: { id: frameId } } } = await sendCdp(entry.where, 'Page.getFrameTree'));
+  const { invocationId } = await sendCdp(entry.where, 'WebMCP.invokeTool', { frameId, toolName: name, input: input || {} });
+  const res = await new Promise((resolve) => {
+    toolCalls.set(invocationId, resolve);
+    setTimeout(() => { if (toolCalls.delete(invocationId)) resolve({ status: 'TimedOut', errorText: 'no response within 20s' }); }, 20000);
+  });
+  let out = '';
+  const content = res.output && (res.output.content || res.output);
+  if (Array.isArray(content)) out = content.map((c) => (c && c.type === 'text' ? c.text : JSON.stringify(c))).join('\n');
+  else if (content != null) out = typeof content === 'string' ? content : JSON.stringify(content);
+  return `tool ${name}: ${res.status}${res.errorText ? ` (${res.errorText})` : ''}${out ? `\n    output (untrusted page data): ${out.slice(0, 2000).replace(/\n/g, '\n    ')}` : ''}`;
+}
+
 const dragIntercepts = new Map(); // tabId -> drag data captured by Input.dragIntercepted
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === 'Input.dragIntercepted' && source.tabId != null) dragIntercepts.set(source.tabId, params.data);
@@ -1454,6 +1515,9 @@ async function runOp(tabId, op) {
       if (!paths.length) return `${op.ref}: upload needs paths:["/absolute/file"]`;
       const u = await uploadFiles(T, REF, paths);
       return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
+    }
+    case 'tool': {
+      return invokeTool(tabId, String(op.name || ''), op.input);
     }
     case 'key': {
       const err = await pressKey(tabId, op.key);
