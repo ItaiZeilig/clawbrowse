@@ -154,8 +154,8 @@ const TOOLS = [
   },
   {
     name: 'browser_navigate',
-    description: 'Navigate the target tab to a URL and return the element table once loaded.',
-    inputSchema: { type: 'object', properties: { url: { type: 'string' }, tabId: { type: 'number' } }, required: ['url'] },
+    description: 'Navigate the target tab to a URL and return the element table once loaded. If the current page asks "leave site? unsaved changes" (beforeunload) the navigation is cancelled unless dialog:"accept" — only pass that when the user is fine losing unsaved changes on that page.',
+    inputSchema: { type: 'object', properties: { url: { type: 'string' }, tabId: { type: 'number' }, dialog: { type: 'string', enum: ['accept', 'dismiss'] } }, required: ['url'] },
     annotations: { title: 'Navigate tab to URL', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },
   {

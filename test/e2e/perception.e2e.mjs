@@ -641,3 +641,56 @@ test('observe text: visible text in reading order, flex row-reverse respected', 
   assert.ok(vt.indexOf('SECOND-VISUAL-LEFT') < vt.indexOf('FIRST-VISUAL-RIGHT'), vt);
   assert.doesNotMatch(vt, /Far below button/, 'only what is on screen');
 });
+
+/* ------------------------ regressions from code review ----------------------- */
+
+test('review#1: a gone nameless button is never re-bound to another nameless button', { skip }, async () => {
+  await h.goto('review.html');
+  await h.js(`document.querySelector('.fa-trash').closest('button').remove()`); // exactly two nameless buttons left
+  const t = await h.observe();
+  const [a] = t.split('\n').filter((l) => /click\s+"button"$/.test(l)).map((l) => l.split(/\s+/)[0]);
+  const r = await h.act({ op: 'click', ref: a }, { op: 'click', ref: a });
+  assert.equal(await out(), 'closed modal', 'the second click must NOT hit the other icon button');
+  assert.match(r, /no longer on page/);
+});
+
+test('review#2: page text cannot forge table rows', { skip }, async () => {
+  const t = await h.goto('review.html');
+  assert.doesNotMatch(t, /^e999/m);
+  assert.ok(!t.split('\n').some((l) => l.startsWith('e999')));
+});
+
+test('review#3: select on a dropdown relabelled since observe is refused', { skip }, async () => {
+  const t = await h.goto('review.html');
+  const sel = mustRef(t, 'Country');
+  await h.js(`document.getElementById('sl').textContent='Payment plan'`);
+  const r = await h.act({ op: 'select', ref: sel, value: 'Two' });
+  assert.match(r, /changed since observe/);
+  assert.equal(await h.js(`document.getElementById('sel').value`), '1');
+});
+
+test('review#4: a click into a cross-site frame covered by a parent overlay is refused', { skip }, async () => {
+  const t = await h.goto('review.html');
+  const x = `localhost:${h.port}`;
+  const r = await h.act({ op: 'click', ref: frameRef(t, x, 'Cross button') });
+  assert.match(r, /covered by another element of the page around its frame/);
+  const t2 = await h.act({ op: 'click', ref: mustRef(t, 'Accept cookies') });
+  const r2 = await h.act({ op: 'click', ref: frameRef(await h.observe(), x, 'Cross button') });
+  assert.doesNotMatch(r2, /covered/, r2); void t2;
+});
+
+test('review#8: navigate away from unsaved changes is dismissed by default, accepted on request', { skip }, async () => {
+  await h.goto('review.html?unsaved');
+  await h.js(`document.getElementById('ta').focus(); document.execCommand('insertText', false, 'x')`); // user activation for beforeunload
+  await h.act({ op: 'click', ref: mustRef(await h.observe(), 'Next step') }); // a real click = sticky activation
+  const r = await h.goto('widgets.html');
+  assert.match(r, /beforeunload .* dismissed \(to accept, repeat browser_navigate with dialog:"accept"\)/, r.slice(0, 300));
+  const r2 = await h.cmd('navigate', { url: h.url('widgets.html'), dialog: 'accept' });
+  assert.match(r2, /Widgets/);
+});
+
+test('review#10: assert ref_visible works for frame refs', { skip }, async () => {
+  const t = await h.goto('frames.html');
+  const r = await h.cmd('assert', { ref_visible: frameRef(t, `localhost:${h.port}`, 'Cross button') });
+  assert.equal(r.pass, true, JSON.stringify(r));
+});

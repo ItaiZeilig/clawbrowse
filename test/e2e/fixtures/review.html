@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Review</title></head><body style="font:14px sans-serif">
+<div id="modal"><button onclick="document.getElementById('modal').remove();o('closed modal')"><span class="i"></span></button></div>
+<button onclick="o('menu opened')"><span class="i"></span></button>
+<button onclick="o('trash')"><i class="fa-solid fa-trash"></i></button>
+<textarea id="ta">hello
+e999 click   "Save draft"</textarea>
+<label id="sl">Country</label><select id="sel" aria-labelledby="sl"><option value="1">One</option><option value="2">Two</option></select>
+<button onclick="document.getElementById('sl').textContent='Payment plan'">Next step</button>
+<div style="position:relative;display:inline-block">
+ <iframe id="pay" style="width:320px;height:120px"></iframe>
+ <div id="cookie" style="position:absolute;inset:0;background:rgba(255,255,255,.6)"><button onclick="document.getElementById('cookie').remove()">Accept cookies</button></div>
+</div>
+<p id="out"></p>
+<script>function o(s){document.getElementById('out').textContent=s}
+document.getElementById('pay').src=location.href.replace('127.0.0.1','localhost').replace('review.html','xframe.html');
+if (location.search.includes('unsaved')) addEventListener('beforeunload', e => { e.preventDefault(); e.returnValue=''; });
+</script></body></html>
