@@ -1,0 +1,57 @@
+name: Deploy extension to Chrome Web Store
+
+# Packages extension/ and uploads + submits it to the Chrome Web Store on each
+# GitHub Release. Google still reviews every submission, so "auto" means
+# auto-upload + auto-submit; going live still waits on review.
+#
+# One-time setup (repo Settings -> Secrets and variables -> Actions):
+#   CWS_EXTENSION_ID     ppfdoledneneiaflggcfogecfnhkmloe
+#   CWS_CLIENT_ID        OAuth client id       (Google Cloud, Chrome Web Store API enabled)
+#   CWS_CLIENT_SECRET    OAuth client secret
+#   CWS_REFRESH_TOKEN    OAuth refresh token   (generated once via the consent flow)
+#
+# IMPORTANT: bump extension/manifest.json "version" before each release —
+# the Web Store rejects re-uploading a version that already exists.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check for Web Store credentials
+        id: creds
+        run: |
+          if [ -n "$EXTENSION_ID" ] && [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_SECRET" ] && [ -n "$REFRESH_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Chrome Web Store secrets not set; skipping extension deploy."
+          fi
+
+      - name: Package extension/ -> pawbrowse-extension.zip
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          cd extension
+          zip -r ../pawbrowse-extension.zip . -x '*.DS_Store'
+
+      - name: Upload and submit to Chrome Web Store
+        if: steps.creds.outputs.configured == 'true'
+        run: npx -y chrome-webstore-upload-cli@3 upload --source pawbrowse-extension.zip --auto-publish
