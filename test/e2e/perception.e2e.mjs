@@ -179,9 +179,57 @@ test('a control scrolled out of its iframe is reachable', { skip }, async () => 
   assert.equal(await h.js(`document.getElementById('same').contentDocument.getElementById('o').textContent`), 'low clicked', r);
 });
 
-test('cross-origin iframes are reported, not silently dropped', { skip }, async () => {
+/* ------------------------------ cross-origin frames ------------------------- */
+
+const msgs = () => h.js('window.msgs.join(" | ")');
+const frameRef = (t, host, label) => {
+  // rows of the frame section whose header names this host (first match)
+  const lines = t.split('\n'); let inF = false;
+  for (const l of lines) {
+    if (l.startsWith('frame ')) inF = l.includes(`"${host}`);
+    else if (inF && l.includes(`"${label}"`)) return l.split(/\s+/)[0];
+  }
+  assert.fail(`no "${label}" in frame ${host}:\n${t}`);
+};
+
+test('cross-site (out-of-process) iframe content is listed and clickable', { skip }, async () => {
   const t = await h.goto('frames.html');
-  assert.match(t, /cross-origin frames \(content not readable\): "localhost:\d+"/);
+  assert.doesNotMatch(t, /content not readable/);
+  const x = `localhost:${h.port}`;
+  await h.act({ op: 'click', ref: frameRef(t, x, 'Cross button') }, { op: 'click', ref: frameRef(t, x, 'Cross check') });
+  const m = await msgs();
+  assert.match(m, new RegExp(`${x} cross clicked`), m);
+  assert.match(m, new RegExp(`${x} xc=true`), m);
+});
+
+test('typing into a field inside a cross-site iframe (a card-number style widget)', { skip }, async () => {
+  const t = await h.goto('frames.html');
+  const r = await h.act({ op: 'type', ref: frameRef(t, `localhost:${h.port}`, 'Card number'), text: '4242 4242' });
+  assert.match(r, /"Card number"\s+▸ "4242 4242"/, r);
+});
+
+test('a frame nested inside a cross-site frame (back on the top site) is reachable', { skip }, async () => {
+  const t = await h.goto('frames.html');
+  const r = await h.act({ op: 'click', ref: frameRef(t, `127.0.0.1:${h.port}`, 'Inner button') });
+  void r;
+  assert.match(await msgs(), new RegExp(`127.0.0.1:${h.port} inner clicked`));
+});
+
+test('a confirm() raised inside a cross-site frame is handled, not a hang', { skip }, async () => {
+  let t = await h.goto('frames.html');
+  const x = `localhost:${h.port}`;
+  const r = await h.act({ op: 'click', ref: frameRef(t, x, 'Cross confirm') });
+  assert.match(r, /confirm "Pay now\?" → dismissed/);
+  t = await h.observe();
+  await h.act({ op: 'click', ref: frameRef(t, x, 'Cross confirm'), dialog: 'accept' });
+  const m = await msgs();
+  assert.match(m, /not paid/); assert.match(m, / paid/);
+});
+
+test('read includes cross-site frame text', { skip }, async () => {
+  await h.goto('frames.html');
+  const r = await h.cmd('read');
+  assert.ok(r.includes('Cross frame text'), r);
 });
 
 /* -------------------------- scrolling, overlays, nav ------------------------ */
@@ -398,4 +446,15 @@ test('a ref to a row that no longer exists fails instead of hitting a neighbour'
   const r = await h.act({ op: 'click', ref: rowRef(t, 'Delete', 'Walk dog') }, { op: 'click', ref: rowRef(t, 'Done', 'Walk dog') });
   assert.match(r, /no longer on page/);
   assert.equal(await out(), '|Buy milk,Pay rent,Call mom,Fix bike');
+});
+
+test('150 invisible ad iframes: ignored cheaply; the one visible cross-site frame is read', { skip }, async () => {
+  const t = await h.goto('adframes.html');
+  const frames = t.split('\n').filter((l) => l.startsWith('frame '));
+  assert.equal(frames.length, 2, `expected xframe + its nested frame only:\n${frames.join('\n')}`);
+  const t0 = performance.now();
+  const t2 = await h.observe();
+  const ms = performance.now() - t0;
+  assert.ok(ms < 250, `observe took ${ms.toFixed(0)}ms`);
+  frameRef(t2, `localhost:${h.port}`, 'Cross button');
 });

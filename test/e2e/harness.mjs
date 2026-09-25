@@ -104,8 +104,15 @@ export async function launch() {
   const noopEvent = { addListener() {} };
   // chrome.debugger.onEvent: route flat-session CDP events back to the tab that owns the session.
   const eventListeners = [];
+  const childToTab = new Map(); // auto-attached child (iframe) session -> tabId
   cdp.listeners.push((m) => {
-    for (const [tabId, t] of tabs) if (t.sessionId === m.sessionId) for (const l of eventListeners) l({ tabId }, m.method, m.params);
+    let src = null;
+    for (const [tabId, t] of tabs) if (t.sessionId === m.sessionId) src = { tabId };
+    if (!src && childToTab.has(m.sessionId)) src = { tabId: childToTab.get(m.sessionId), sessionId: m.sessionId };
+    if (!src) return;
+    if (process.env.PAW_TRACE && /^Page\.|Target\.attached/.test(m.method) && !src.sessionId) console.error(Date.now() % 100000, m.method, JSON.stringify(m.params).slice(0, 140));
+    if (m.method === 'Target.attachedToTarget') childToTab.set(m.params.sessionId, src.tabId);
+    for (const l of eventListeners) l(src, m.method, m.params);
   });
   const chrome = {
     runtime: {
@@ -115,10 +122,10 @@ export async function launch() {
     debugger: {
       attach(_t, _v, cb) { cb(); },
       detach(_t, cb) { cb && cb(); },
-      sendCommand({ tabId }, method, params, cb) {
+      sendCommand({ tabId, sessionId }, method, params, cb) {
         const t = tabs.get(tabId);
         if (!t) { lastErr.value = { message: 'No tab with given id' }; cb(); lastErr.value = undefined; return; }
-        cdp.send(method, params, t.sessionId).then(
+        cdp.send(method, params, sessionId || t.sessionId).then(
           (r) => { cb(r); },
           (e) => { lastErr.value = { message: e.message }; try { cb(); } finally { lastErr.value = undefined; } },
         );
@@ -142,11 +149,11 @@ export async function launch() {
   };
   class FakeWS { static CONNECTING = 0; static OPEN = 1; constructor() { this.readyState = 0; } send() {} close() {} }
   const ctx = vm.createContext({
-    chrome, WebSocket: FakeWS, navigator: { userAgent: 'Macintosh' },
+    chrome, WebSocket: FakeWS, navigator: { userAgent: 'Macintosh' }, URL,
     setTimeout, clearTimeout, setInterval, clearInterval, console, JSON, Promise, Error, Math, Number, String, Object, Array, Map, Set,
   });
   vm.runInContext(fs.readFileSync(BACKGROUND, 'utf8'), ctx, { filename: 'background.js' });
-  const ext = vm.runInContext('({ handleCommand, SNAPSHOT, evaluate, snapshot })', ctx);
+  const ext = vm.runInContext('({ handleCommand, SNAPSHOT, evaluate, snapshot, childSessions, readFrames, remoteFrameIds, frameOffset })', ctx);
 
   const tab0 = await newTab();
   const h = {
@@ -166,6 +173,10 @@ export async function launch() {
       return r.result.value;
     },
     cdp: (m, p) => cdp.send(m, p, tabs.get(activeTabId).sessionId),
+    // Evaluate inside PawBrowse's isolated world (what the snapshot sees).
+    ev: (expr) => ext.evaluate(activeTabId, expr),
+    ext,
+    get tabId() { return activeTabId; },
     tab0,
     async close() { cdp.close(); proc.kill('SIGKILL'); server.close(); try { fs.rmSync(profile, { recursive: true, force: true }); } catch {} },
   };
@@ -175,7 +186,7 @@ export async function launch() {
 // Find the ref of the first table row whose label matches (string = exact-insensitive, RegExp).
 export function ref(table, label, kind) {
   for (const line of String(table).split('\n')) {
-    const m = line.match(/^(e\d+(?:_\d+)?)\s+(\w+)\s*\S?\s+"(.*?)"/);
+    const m = line.match(/^((?:f\d+\.)?e\d+(?:_\d+)?)\s+(\w+)\s*\S?\s+"(.*?)"/);
     if (!m) continue;
     if (kind && m[2] !== kind) continue;
     const ok = label instanceof RegExp ? label.test(m[3]) : m[3].toLowerCase() === String(label).toLowerCase();

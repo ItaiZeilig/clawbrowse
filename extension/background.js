@@ -153,9 +153,14 @@ function setBadge(state) {
 
 /* ------------------------------- CDP helpers ------------------------------ */
 
-function sendCdp(tabId, method, params = {}) {
+// A CDP target is a tabId (the tab's top frame) or { tabId, sessionId?, frameId? }: sessionId
+// addresses an out-of-process (cross-site) iframe attached via Target.setAutoAttach (flat sessions,
+// Chrome 125+); frameId pins evaluation to a cross-origin frame living in that session's process.
+const tabOf = (t) => (typeof t === 'object' ? t.tabId : t);
+function sendCdp(target, method, params = {}) {
+  const dbg = typeof target === 'object' ? (target.sessionId ? { tabId: target.tabId, sessionId: target.sessionId } : { tabId: target.tabId }) : { tabId: target };
   return new Promise((resolve, reject) => {
-    chrome.debugger.sendCommand({ tabId }, method, params, (res) => {
+    chrome.debugger.sendCommand(dbg, method, params, (res) => {
       const err = chrome.runtime.lastError;
       if (err) reject(new Error(err.message)); else resolve(res);
     });
@@ -167,30 +172,35 @@ function sendCdp(tabId, method, params = {}) {
 // page that monkey-patches Array.prototype / JSON / Element.prototype, or that squats on our cache
 // name, can't blind or steer the snapshot. One world per tab's main frame; a navigation destroys it
 // and the next call transparently recreates it.
-const worlds = new Map(); // tabId -> executionContextId
+const worlds = new Map(); // tabId -> Map(frameKey -> executionContextId)
+const frameKey = (t) => (typeof t === 'object' ? `${t.sessionId || ''}|${t.frameId || ''}` : '|');
 
-async function worldFor(tabId) {
-  const cached = worlds.get(tabId);
+async function worldFor(target) {
+  const tabId = tabOf(target), key = frameKey(target);
+  let m = worlds.get(tabId);
+  if (!m) { m = new Map(); worlds.set(tabId, m); }
+  const cached = m.get(key);
   if (cached != null) return cached;
-  const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree');
-  const { executionContextId } = await sendCdp(tabId, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'pawbrowse' });
-  worlds.set(tabId, executionContextId);
+  let frameId = typeof target === 'object' ? target.frameId : null;
+  if (!frameId) ({ frameTree: { frame: { id: frameId } } } = await sendCdp(target, 'Page.getFrameTree'));
+  const { executionContextId } = await sendCdp(target, 'Page.createIsolatedWorld', { frameId, worldName: 'pawbrowse' });
+  m.set(key, executionContextId);
   return executionContextId;
 }
 
-async function evaluate(tabId, expression, opts) {
+async function evaluate(target, expression, opts) {
   let r;
   for (let attempt = 0; ; attempt++) {
-    const contextId = await worldFor(tabId);
+    const contextId = await worldFor(target);
     try {
-      r = await sendCdp(tabId, 'Runtime.evaluate', { expression, contextId, returnByValue: !(opts && opts.handle), awaitPromise: true });
+      r = await sendCdp(target, 'Runtime.evaluate', { expression, contextId, returnByValue: !(opts && opts.handle), awaitPromise: true });
       break;
     } catch (e) {
       // The world died with its previous document (navigation/reload) BEFORE this call: make a fresh
       // one and retry once. NOT when the context was destroyed DURING the call ("Execution context
       // was destroyed") — the expression may have already acted (e.g. a select that navigated) and
       // re-running it on the new page would act twice.
-      worlds.delete(tabId);
+      worlds.get(tabOf(target))?.delete(frameKey(target));
       if (attempt >= 1 || !/Cannot find context/i.test(e.message)) throw e;
     }
   }
@@ -228,6 +238,8 @@ async function attach(tabId) {
   // Network events (no bodies buffered) let waits follow the page's real fetch/XHR activity.
   await sendCdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }).catch(() => {});
   try { const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree'); tabWatch(tabId).mainFrame = frameTree.frame.id; } catch {}
+  // Cross-site iframes run in other renderer processes: attach to each as a flat child session.
+  await sendCdp(tabId, 'Target.setAutoAttach', AUTO_ATTACH).catch(() => {});
   // Make the tab behave as focused even when it's a background tab, so focus/blur, rendering,
   // and focus-dependent menus/dropdowns work while driving (the same approach Playwright uses for
   // backgrounded pages). A hidden tab still throttles requestAnimationFrame, so our waits use
@@ -257,10 +269,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === 'Page.javascriptDialogClosed') { openDialogs.delete(tabId); return; }
   if (method !== 'Page.javascriptDialogOpening') return;
   const pol = acting.get(tabId);
-  if (!pol) { openDialogs.set(tabId, { type: params.type, message: params.message }); return; }
+  const where = source.sessionId ? { tabId, sessionId: source.sessionId } : tabId; // dialogs can come from frames
+  if (!pol) { openDialogs.set(tabId, { type: params.type, message: params.message, where }); return; }
   const accept = pol.accept != null ? pol.accept : params.type === 'alert';
   const promptText = pol.text != null ? String(pol.text) : (params.defaultPrompt || '');
-  sendCdp(tabId, 'Page.handleJavaScriptDialog', { accept, promptText }).catch(() => {});
+  sendCdp(where, 'Page.handleJavaScriptDialog', { accept, promptText }).catch(() => {});
   const lines = dialogLog.get(tabId) || [];
   lines.push(`${params.type} "${String(params.message || '').slice(0, 200)}" → ${accept ? 'accepted' : 'dismissed'}${params.type === 'prompt' && accept ? ` with "${promptText}"` : ''}${!accept && params.type !== 'alert' ? ' (to accept, repeat the op with dialog:"accept")' : ''}`);
   dialogLog.set(tabId, lines);
@@ -505,7 +518,7 @@ const SNAPSHOT = `(function(seed){
   // element's frame-local rect into top-level viewport coordinates (shadow roots share their
   // frame's coords; iframes add their content-box offset). Cross-origin frames can't be read from
   // here; they're reported so the agent knows content exists that it can't see.
-  var frames=[];
+  var frames=[], remoteEls=[];
   function collect(){
     var out=[], seen=new Set(), scanned=0;
     function add(el, dx, dy, clk){ if(seen.has(el)) return; seen.add(el); out.push({el:el, dx:dx, dy:dy, clk:clk}); }
@@ -537,9 +550,10 @@ const SNAPSHOT = `(function(seed){
             var ir=n.getBoundingClientRect();
             walk(idoc, dx+ir.left+n.clientLeft+(parseFloat(n.ownerDocument.defaultView.getComputedStyle(n).paddingLeft)||0),
               dy+ir.top+n.clientTop+(parseFloat(n.ownerDocument.defaultView.getComputedStyle(n).paddingTop)||0), depth+1);
-          } else if(visible(n) && sized(n)){
+          } else if(visible(n) && (function(){ var fr=n.getBoundingClientRect(); return fr.width>=10 && fr.height>=10; })()){ // 1x1 ad/tracking frames don't count
             var src=''; try{ src=new URL(n.src, location.href).host; }catch(_){ src=n.getAttribute('src')||''; }
             frames.push(clean(n.getAttribute('title')||n.getAttribute('aria-label')||n.name||src||'frame',60));
+            remoteEls.push(n);
           }
         }
       }
@@ -669,6 +683,9 @@ const SNAPSHOT = `(function(seed){
   // Displayed id derives from the STABLE node id (not position), so a reused number can never
   // remap to a different element across observations; duplicates (e.g. combobox Open) get a suffix.
   // Guarded so a getter/DOM quirk while building ids can't blank the whole table.
+  // Resolved to CDP frame ids by the extension (cross-origin frames): biggest first, so a real
+  // embedded app/checkout wins over banner slots when there are many.
+  cache.remoteEls=remoteEls.map(function(el){ var r=el.getBoundingClientRect(); return {el:el, a:r.width*r.height}; }).sort(function(p,q){ return q.a-p.a; }).slice(0,12).map(function(p){ return p.el; });
   var focusId=null;
   try{
     cache.byId={}; cache.guards={}; cache.fps={}; var used={};
@@ -694,34 +711,48 @@ const SNAPSHOT = `(function(seed){
     cache.byId[id]=identity(hit);
     return hit;
   };
-  return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, actions:actions};
+  return {url:location.href, title:document.title, vh:innerHeight, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, actions:actions};
   }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, omitted:0, actions:[]}; }
 })`;
+
+function formatRow(a) {
+  let flag = ' ';
+  if (typeof a.expanded === 'boolean') flag = a.expanded ? '▾' : '▸'; // open / closed
+  else if (typeof a.checked === 'boolean') flag = a.checked ? '✓' : '·';
+  else if (a.selected === true) flag = '◉';
+  let line = `${a.id.padEnd(4)} ${a.kind.padEnd(6)}${flag} "${a.label}"`;
+  if (a.ctx) line += ` in "${a.ctx}"`;
+  if (a.required) line += ' (required)';
+  if (a.value) line += `  ▸ "${a.value}"`;
+  if (a.fmt) line += `  fmt{${a.fmt}}`;
+  if (a.kind === 'select' && a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
+  if (a.invalid) line += `  ⚠ "${a.invalid}"`;
+  if (a.off === 'up') line += '  ↑ above view';
+  else if (a.off === 'down') line += '  ↓ below view';
+  else if (a.off === 'scroll') line += '  ↕ scrolled out of its box';
+  if (a.covered) line += '  ⊘ covered';
+  return line;
+}
 
 function formatTable(snap) {
   if (!snap) return '(page not ready)';
   const lines = [];
+  const fsnaps = snap.frameSnaps || [];
+  const count = snap.actions.length + fsnaps.reduce((n, f) => n + Math.min(60, f.snap.actions.length), 0);
   lines.push(`${snap.title || '(untitled)'}  —  ${snap.url}`);
   const more = (snap.omitted || 0) + (snap.offMore || 0);
-  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.actions.length} controls${more ? ` (+${more} more; scroll to reveal)` : ''}${snap.focus ? `  ·  focus ${snap.focus}` : ''}`);
-  if (snap.frames && snap.frames.length) lines.push(`cross-origin frames (content not readable): ${snap.frames.map((f) => `"${f}"`).join(', ')}`);
-  for (const a of snap.actions) {
-    let flag = ' ';
-    if (typeof a.expanded === 'boolean') flag = a.expanded ? '▾' : '▸'; // open / closed
-    else if (typeof a.checked === 'boolean') flag = a.checked ? '✓' : '·';
-    else if (a.selected === true) flag = '◉';
-    let line = `${a.id.padEnd(4)} ${a.kind.padEnd(6)}${flag} "${a.label}"`;
-    if (a.ctx) line += ` in "${a.ctx}"`;
-    if (a.required) line += ' (required)';
-    if (a.value) line += `  ▸ "${a.value}"`;
-    if (a.fmt) line += `  fmt{${a.fmt}}`;
-    if (a.kind === 'select' && a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
-    if (a.invalid) line += `  ⚠ "${a.invalid}"`;
-    if (a.off === 'up') line += '  ↑ above view';
-    else if (a.off === 'down') line += '  ↓ below view';
-    else if (a.off === 'scroll') line += '  ↕ scrolled out of its box';
-    if (a.covered) line += '  ⊘ covered';
-    lines.push(line);
+  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${count} controls${more ? ` (+${more} more; scroll to reveal)` : ''}${snap.focus ? `  ·  focus ${snap.focus}` : ''}`);
+  if (snap.frames && snap.frames.length > fsnaps.length) lines.push(`cross-origin frames (content not readable): ${snap.frames.map((f) => `"${f}"`).join(', ')}`);
+  for (const a of snap.actions) lines.push(formatRow(a));
+  for (const { f, off, snap: fs } of fsnaps) {
+    let host = f.url;
+    try { host = new URL(f.url).host || f.url; } catch {}
+    lines.push(`frame f${f.idx} "${String(host).slice(0, 60)}" (cross-origin):`);
+    for (const a of fs.actions.slice(0, 60)) {
+      const ty = off.y + a.y;
+      if (!a.off && (ty < 0 || ty >= (snap.vh || 1e9))) a.off = ty < 0 ? 'up' : 'down';
+      lines.push(formatRow({ ...a, id: `f${f.idx}.${a.id}` }));
+    }
   }
   return lines.join('\n');
 }
@@ -773,14 +804,131 @@ const READ_TEXT = `(function(max){
   return {title:document.title,url:location.href,text:text};
 })`;
 
-async function snapshot(tabId) {
-  let last;
-  for (let i = 0; i < 8; i++) {
+/* ------------------------------ Cross-origin frames ------------------------- *
+ * The page-side snapshot can't reach into cross-origin iframes (payment fields, embedded logins,
+ * widgets). CDP can: cross-SITE frames are separate targets we auto-attach to as flat child
+ * sessions; cross-origin but same-site frames share their parent's process and get their own
+ * isolated world via frameId. Each readable frame gets a stable index per tab (f1, f2...), its
+ * refs are shown as f1.e3, and clicks are translated by the frame's on-screen offset.           */
+const AUTO_ATTACH = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: 'iframe' }, { exclude: true }] };
+const childSessions = new Map(); // tabId -> Map(sessionId -> { targetId, parent: sessionId|null })
+const frameIdx = new Map();      // tabId -> { next, byKey: Map(key -> idx), byIdx: Map(idx -> frame) }
+function kidsOf(tabId) { let m = childSessions.get(tabId); if (!m) { m = new Map(); childSessions.set(tabId, m); } return m; }
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source.tabId;
+  if (tabId == null) return;
+  if (method === 'Target.attachedToTarget') {
+    const info = params.targetInfo || {};
+    if (info.type !== 'iframe' || /^chrome-extension:/i.test(info.url || '')) return; // other extensions' frames aren't ours to drive
+    // Ad-heavy pages spawn hundreds of (mostly invisible) frames: just record them; a session is
+    // only set up (ensureSession) when one of its frames is actually visible and read.
+    kidsOf(tabId).set(params.sessionId, { targetId: info.targetId, parent: source.sessionId || null, ready: null });
+  } else if (method === 'Target.detachedFromTarget') {
+    kidsOf(tabId).delete(params.sessionId);
+    const m = worlds.get(tabId);
+    if (m) for (const k of [...m.keys()]) if (k.startsWith(`${params.sessionId}|`)) m.delete(k);
+  }
+});
+
+async function ensureSession(tabId, sessionId) {
+  const k = kidsOf(tabId).get(sessionId);
+  if (!k) return;
+  if (!k.ready) {
+    const t = { tabId, sessionId };
+    k.ready = Promise.all([['Page.enable', {}], ['DOM.enable', {}], ['Target.setAutoAttach', AUTO_ATTACH]].map(([m, p]) => sendCdp(t, m, p).catch(() => {})));
+  }
+  await k.ready;
+}
+
+// CDP frame ids of the visible cross-origin iframes a snapshot found in `target`'s document.
+async function remoteFrameIds(target) {
+  const ctx = await worldFor(target);
+  const r = await sendCdp(target, 'Runtime.evaluate', { expression: 'window.__pawbrowse && window.__pawbrowse.remoteEls', contextId: ctx, objectGroup: 'pawframes' });
+  const ids = [];
+  try {
+    if (!r.result || !r.result.objectId) return ids;
+    const { result } = await sendCdp(target, 'Runtime.getProperties', { objectId: r.result.objectId, ownProperties: true });
+    for (const p of result) {
+      if (!/^\d+$/.test(p.name) || !p.value || !p.value.objectId) continue;
+      try { const { node } = await sendCdp(target, 'DOM.describeNode', { objectId: p.value.objectId }); if (node.frameId) ids.push(node.frameId); } catch {}
+    }
+  } finally { sendCdp(target, 'Runtime.releaseObjectGroup', { objectGroup: 'pawframes' }).catch(() => {}); }
+  return ids;
+}
+
+// Read the cross-origin frames under a snapshot, depth-first: only visible ones, never invisible
+// subtrees. Cross-SITE frames are their own attached session; cross-origin same-site frames live
+// in the parent's process and are addressed by frameId.
+async function readFrames(tabId, parentTarget, parentSnap, out, depth = 0) {
+  if (!parentSnap || !parentSnap.frames || !parentSnap.frames.length || depth > 4 || out.length >= 12) return out;
+  let ids = [];
+  try { ids = await remoteFrameIds(parentTarget); } catch {}
+  let fi = frameIdx.get(tabId);
+  if (!fi) { fi = { next: 1, byKey: new Map(), byIdx: new Map() }; frameIdx.set(tabId, fi); }
+  for (const fid of ids) {
+    if (out.length >= 12) break;
+    const sid = [...kidsOf(tabId)].find(([, k]) => k.targetId === fid)?.[0];
+    const parentSession = typeof parentTarget === 'object' ? parentTarget.sessionId : undefined;
+    const f = sid
+      ? { target: { tabId, sessionId: sid }, root: true, key: `s:${fid}` }
+      : { target: { tabId, sessionId: parentSession, frameId: fid }, root: false, key: `f:${fid}` };
     try {
-      const snap = await evaluate(tabId, `${SNAPSHOT}(${refSeed.get(tabId) || 1})`);
-      if (snap) { if (snap.next > (refSeed.get(tabId) || 1)) { refSeed.set(tabId, snap.next); persistState(); } return snap; }
+      if (sid) await ensureSession(tabId, sid);
+      const off = await frameOffset(tabId, f);
+      if (off.w < 10 || off.h < 10) continue; // tracking pixels / collapsed frames
+      const fs = await snapshot(f.target, 1);
+      if (!fs || !fs.actions) continue;
+      if (!fi.byKey.has(f.key)) fi.byKey.set(f.key, fi.next++);
+      f.idx = fi.byKey.get(f.key); f.url = fs.url;
+      fi.byIdx.set(f.idx, f);
+      out.push({ f, off, snap: fs });
+      await readFrames(tabId, f.target, fs, out, depth + 1);
+    } catch {}
+  }
+  return out;
+}
+
+// Top-level viewport offset (and size) of a frame's content box: its owner <iframe>'s content quad
+// in the parent's local root, plus that parent session's own offset, up to the top.
+async function frameOffset(tabId, f) {
+  let x = 0, y = 0, w = 0, h = 0, first = true;
+  let sess = f.target.sessionId || null, isRoot = !!f.root;
+  let fid = isRoot ? kidsOf(tabId).get(sess)?.targetId : f.target.frameId;
+  for (let g = 0; g < 10 && fid; g++) {
+    // A session's root frame is owned by an <iframe> in the PARENT session; an in-process frame's
+    // owner is in its own session, whose box coords are relative to that session's root.
+    const owner = isRoot ? (kidsOf(tabId).get(sess)?.parent ?? null) : sess;
+    const t = owner ? { tabId, sessionId: owner } : tabId;
+    const { backendNodeId } = await sendCdp(t, 'DOM.getFrameOwner', { frameId: fid });
+    const { model } = await sendCdp(t, 'DOM.getBoxModel', { backendNodeId });
+    const q = model.content;
+    x += q[0]; y += q[1];
+    if (first) { w = q[2] - q[0]; h = q[5] - q[1]; first = false; }
+    if (!owner) break; // reached the top session: coordinates are now top-level
+    sess = owner; isRoot = true; fid = kidsOf(tabId).get(owner)?.targetId;
+  }
+  return { x, y, w, h };
+}
+
+// Split "f2.e7" into its frame and the frame-local ref.
+function routeRef(tabId, ref) {
+  const m = /^f(\d+)\.(.+)$/.exec(String(ref || ''));
+  if (!m) return { target: tabId, ref, frame: null };
+  const f = frameIdx.get(tabId)?.byIdx.get(Number(m[1]));
+  if (!f) return { target: null, ref: m[2], frame: null };
+  return { target: f.target, ref: m[2], frame: f };
+}
+
+async function snapshot(target, tries = 8) {
+  const sk = typeof target === 'object' ? `${target.tabId}#${frameKey(target)}` : target;
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+      if (snap) { if (snap.next > (refSeed.get(sk) || 1)) { refSeed.set(sk, snap.next); persistState(); } return snap; }
     } catch (e) { last = e; }
-    await sleep(120);
+    if (i < tries - 1) await sleep(120);
   }
   if (last) throw last;
   return null;
@@ -792,10 +940,12 @@ const lastTable = new Map(); // tabId -> table text (without the header lines th
 
 // Ref numbers and the focus marker are dropped: clicking a button that does nothing still focuses
 // it, and that alone must not count as "the page changed".
-function tableBody(t) { return String(t).split('\n').map((l) => l.replace(/^e\d+(_\d+)?\s+/, '').replace(/ {2}· {2}focus e\S+$/, '')).join('\n'); }
+function tableBody(t) { return String(t).split('\n').map((l) => l.replace(/^(f\d+\.)?e\d+(_\d+)?\s+/, '').replace(/ {2}· {2}focus e\S+$/, '')).join('\n'); }
 
 async function observe(tabId) {
-  const t = formatTable(await snapshot(tabId));
+  const snap = await snapshot(tabId);
+  if (snap) snap.frameSnaps = await readFrames(tabId, tabId, snap, []);
+  const t = formatTable(snap);
   lastTable.set(tabId, tableBody(t));
   return t;
 }
@@ -876,13 +1026,13 @@ async function uploadFiles(tabId, ref, paths) {
   })()`, { handle: true });
   if (!h || !h.objectId) return { error: 'not a file-upload field (observe again)' };
   try {
-    await sendCdp(tabId, 'DOM.setFileInputFiles', { files: paths, objectId: h.objectId });
+    await sendCdp(tabId, 'DOM.setFileInputFiles', { files: paths, objectId: h.objectId }); // tabId: the frame target
   } catch (e) {
     return { error: /not allowed/i.test(e.message)
       ? 'Chrome blocked the upload: enable "Allow access to file URLs" for PawBrowse in chrome://extensions'
       : e.message };
   } finally {
-    sendCdp(tabId, 'Runtime.releaseObject', { objectId: h.objectId }).catch(() => {});
+    sendCdp(tabId, 'Runtime.releaseObject', { objectId: h.objectId }).catch(() => {}); // (frame target, see above)
   }
   return { ok: true };
 }
@@ -934,34 +1084,52 @@ async function clickAt(tabId, x, y) {
 const watches = new Map(); // tabId -> { mainFrame, inflight: Map(reqId -> startedAt), navStart, navDone }
 function tabWatch(tabId) {
   let w = watches.get(tabId);
-  if (!w) { w = { mainFrame: null, inflight: new Map(), navStart: 0, navDone: 0 }; watches.set(tabId, w); }
+  if (!w) { w = { mainFrame: null, inflight: new Map(), navStart: 0, navDone: 0, committed: true, navReq: null }; watches.set(tabId, w); }
   return w;
 }
 const TRACKED = new Set(['Fetch', 'XHR', 'Document']);
 chrome.debugger.onEvent.addListener((source, method, params) => {
-  if (source.tabId == null || source.sessionId) return; // top-level target only
+  if (source.tabId == null) return;
   const w = watches.get(source.tabId);
   if (!w) return;
+  // A request can finish on a different session than it started on (an iframe's document request
+  // is announced by the parent, completed by the child): accept completions from any session.
+  if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+    w.inflight.delete(params.requestId);
+    if (method === 'Network.loadingFailed' && params.requestId === w.navReq && !w.committed) w.navDone = Date.now(); // blocked/aborted navigation
+    return;
+  }
+  if (source.sessionId) return; // everything else: the top-level target only
   const now = Date.now();
+  const begin = (loaderId) => { w.navStart = now; w.navDone = 0; w.committed = false; w.navReq = loaderId || null; };
   switch (method) {
     case 'Network.requestWillBeSent':
-      if (TRACKED.has(params.type)) w.inflight.set(params.requestId, now);
-      if (params.type === 'Document' && params.frameId === w.mainFrame && params.requestId === params.loaderId) { w.navStart = now; w.navDone = 0; }
+      // Documents: only the main frame's (subframe documents finish on other sessions / may never).
+      if (TRACKED.has(params.type) && (params.type !== 'Document' || params.frameId === w.mainFrame)) w.inflight.set(params.requestId, now);
+      if (params.type === 'Document' && params.frameId === w.mainFrame && params.requestId === params.loaderId && w.navReq !== params.requestId) {
+        if (w.navDone >= w.navStart) begin(params.requestId); else w.navReq = params.requestId;
+      }
       break;
-    case 'Network.loadingFinished': case 'Network.loadingFailed':
-      w.inflight.delete(params.requestId);
+    case 'Network.responseReceived':
+      // A 204/205 navigation never replaces the document: it's over as soon as the response lands.
+      if (params.requestId === w.navReq && (params.response.status === 204 || params.response.status === 205)) w.navDone = now;
       break;
     case 'Page.frameRequestedNavigation': case 'Page.frameStartedNavigating':
-      if (params.frameId === w.mainFrame && !(params.navigationType === 'sameDocument')) { w.navStart = now; w.navDone = 0; }
+      if (params.frameId === w.mainFrame && params.navigationType !== 'sameDocument') begin(params.loaderId);
       break;
     case 'Page.frameNavigated':
-      if (!params.frame.parentId) w.mainFrame = params.frame.id;
+      if (!params.frame.parentId) { w.mainFrame = params.frame.id; w.committed = true; }
       break;
-    case 'Page.domContentEventFired': case 'Page.loadEventFired': case 'Page.downloadWillBegin':
-      w.navDone = now;
+    // The OLD document can still fire load/stop events after a navigation starts: only events that
+    // follow the new document's commit (frameNavigated) mean "arrived".
+    case 'Page.domContentEventFired': case 'Page.loadEventFired':
+      if (w.committed) w.navDone = now;
       break;
     case 'Page.frameStoppedLoading':
-      if (params.frameId === w.mainFrame) w.navDone = now; // incl. cancelled navigations / 204s
+      if (params.frameId === w.mainFrame && w.committed) w.navDone = now;
+      break;
+    case 'Page.downloadWillBegin': case 'Page.navigatedWithinDocument':
+      w.navDone = now;
       break;
   }
 });
@@ -984,16 +1152,26 @@ async function settle(tabId, capMs, since, opts) {
   // Let the action's handlers run first (event loop turn + a frame).
   await sleep(25);
   let idleSince = 0;
+  // Which requests are the action's (vs. background beacons/polling that never stop): those that
+  // start within 500ms of the action — or of the new page's DOMContentLoaded — plus requests that
+  // start right after one of those finishes (a fetch chain). Anything else is ignored.
+  const rel = new Set();
+  let windowEnd = start + 500, sawNav = false;
   for (;;) {
     const now = Date.now();
     const navigating = w.navStart >= start - 50 && w.navDone < w.navStart;
     // A navigation gets a longer allowance: the next page must actually arrive.
     if (now > (navigating ? Math.max(deadline, start + 10000) : deadline)) break;
-    if (navigating) { await sleep(30); continue; }
+    if (navigating) { sawNav = true; await sleep(30); continue; }
+    if (sawNav) { sawNav = false; windowEnd = Math.max(windowEnd, w.navDone + 500); }
     let busy = false;
     for (const [id, t] of w.inflight) {
-      if (now - t > 15000) { w.inflight.delete(id); continue; } // leaked/long-poll: forget it
-      if (t >= start - 50 && now - t < 4000) busy = true;         // started by this action, still young
+      if (now - t > 15000) { w.inflight.delete(id); continue; } // leaked / long-poll: forget it
+      if (!rel.has(id) && t >= start - 50 && t <= windowEnd) rel.add(id);
+    }
+    for (const id of rel) {
+      if (!w.inflight.has(id)) { rel.delete(id); windowEnd = Math.max(windowEnd, now + 150); continue; } // finished: allow a follow-up
+      if (now - w.inflight.get(id) < 8000) busy = true;
     }
     if (busy) { idleSince = 0; await sleep(30); continue; }
     if (now < grace) { await sleep(30); continue; } // debounce window: a request may still be coming
@@ -1047,18 +1225,29 @@ const KEYMAP = {
 async function runOp(tabId, op) {
   const pol = acting.get(tabId);
   if (pol) { pol.accept = op.dialog === 'accept' ? true : op.dialog === 'dismiss' ? false : undefined; pol.text = op.dialog_text; }
+  // Route the ref to its frame: T is where page-side code runs, R the frame-local ref; top() turns
+  // frame-local coordinates into top-level ones for input (which the browser routes to the frame).
+  const rt = op.ref != null ? routeRef(tabId, op.ref) : { target: tabId, ref: op.ref, frame: null };
+  if (op.ref != null && !rt.target) return `${op.ref}: unknown frame (observe again)`;
+  const T = rt.target, REF = rt.ref;
+  const top = async (x, y) => {
+    if (!rt.frame) return { x, y };
+    const off = await frameOffset(tabId, rt.frame);
+    return { x: Math.round(x + off.x), y: Math.round(y + off.y) };
+  };
   switch (op.op) {
     case 'dialog': {
       const d = openDialogs.get(tabId);
       if (!d) return 'dialog: no dialog is open';
-      await sendCdp(tabId, 'Page.handleJavaScriptDialog', { accept: !!op.accept, promptText: op.text != null ? String(op.text) : '' });
+      await sendCdp(d.where || tabId, 'Page.handleJavaScriptDialog', { accept: !!op.accept, promptText: op.text != null ? String(op.text) : '' });
       openDialogs.delete(tabId);
       return `dialog: ${d.type} "${String(d.message || '').slice(0, 120)}" → ${op.accept ? 'accepted' : 'dismissed'}`;
     }
     case 'click': {
-      const r = await resolveHit(tabId, op.ref);
+      const r = await resolveHit(T, REF);
       if (r.error) return `${op.ref}: ${r.error}`;
-      await clickAt(tabId, r.x, r.y);
+      const p = await top(r.x, r.y);
+      await clickAt(tabId, p.x, p.y);
       return `click ${op.ref}`;
     }
     case 'click_text': {
@@ -1068,13 +1257,14 @@ async function runOp(tabId, op) {
       return `click_text "${op.text}"`;
     }
     case 'type': {
-      const r = await resolveHit(tabId, op.ref, { fill: true });
+      const r = await resolveHit(T, REF, { fill: true });
       if (r.error) return `${op.ref}: ${r.error}`;
       if (r.set) {
-        const sv = await setValue(tabId, op.ref, op.text);
+        const sv = await setValue(T, REF, op.text);
         return sv.error ? `${op.ref}: ${sv.error}` : `type ${op.ref} (set to "${sv.value}")`;
       }
-      await clickAt(tabId, r.x, r.y); // focus the field with a trusted click
+      const p = await top(r.x, r.y);
+      await clickAt(tabId, p.x, p.y); // focus the field with a trusted click
       // Select-all then insert — robust for React/controlled inputs.
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2, commands: ['selectAll'] });
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2 });
@@ -1086,14 +1276,14 @@ async function runOp(tabId, op) {
       } else {
         await sendCdp(tabId, 'Input.insertText', { text: txt });
       }
-      await waitForOptions(tabId, op.ref, 250); // let autocomplete suggestions render
+      await waitForOptions(T, REF, 250); // let autocomplete suggestions render
       return `type ${op.ref}`;
     }
     case 'select': {
-      const R = JSON.stringify(String(op.ref));
+      const R = JSON.stringify(String(REF));
       const V = JSON.stringify(String(op.value ?? ''));
       try {
-        const res = await evaluate(tabId, `(function(){
+        const res = await evaluate(T, `(function(){
           var c=window.__pawbrowse; var e=(c&&c.get)?c.get(${R}):null;
           if(!e||!e.isConnected) return 'unknown ref (observe again)';
           if(e.tagName!=='SELECT') return 'not a dropdown';
@@ -1114,7 +1304,7 @@ async function runOp(tabId, op) {
     case 'upload': {
       const paths = [].concat(op.paths ?? op.path ?? []).map(String).filter(Boolean);
       if (!paths.length) return `${op.ref}: upload needs paths:["/absolute/file"]`;
-      const u = await uploadFiles(tabId, op.ref, paths);
+      const u = await uploadFiles(T, REF, paths);
       return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
     }
     case 'key': {
@@ -1131,15 +1321,15 @@ async function runOp(tabId, op) {
       // the middle of the page, so the right box scrolls.
       let cx = 400, cy = 400;
       try {
-        const R = JSON.stringify(String(op.ref || ''));
-        const c = await evaluate(tabId, `(function(){
+        const R = JSON.stringify(String(REF || ''));
+        const c = await evaluate(T, `(function(){
           var c=window.__pawbrowse, e=${R}&&c&&c.get&&c.get(${R});
           if(e&&e.isConnected){ var s=c.surface?c.surface(e):e; if(s){ var r=s.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, w=s.ownerDocument.defaultView;
             while(w&&w.frameElement){ var fr=w.frameElement.getBoundingClientRect(); x+=fr.left+w.frameElement.clientLeft; y+=fr.top+w.frameElement.clientTop; w=w.frameElement.ownerDocument.defaultView; }
             if(x>=0&&y>=0&&x<innerWidth&&y<innerHeight) return [Math.round(x),Math.round(y)]; } }
           return [Math.round(innerWidth/2),Math.round(innerHeight/2)];
         })()`);
-        if (Array.isArray(c)) { cx = c[0]; cy = c[1]; }
+        if (Array.isArray(c)) ({ x: cx, y: cy } = await top(c[0], c[1]));
       } catch {}
       await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: dy });
       return `scroll ${dy}`;
@@ -1189,8 +1379,9 @@ async function handleCommand(cmd, args, token, session) {
       return whileActing(tabId, async () => {
       const t0 = Date.now();
       const w = tabWatch(tabId);
-      w.navStart = t0; w.navDone = 0; // mark before navigating: the old document must not count as "arrived"
+      w.navStart = t0; w.navDone = 0; w.committed = false; w.navReq = null; // the old document must not count as "arrived"
       const nav = await sendCdp(tabId, 'Page.navigate', { url });
+      if (nav && nav.loaderId && !w.committed) w.navReq = nav.loaderId;
       worlds.delete(tabId); // the old document's world is going away with it
       if (nav && nav.errorText) throw new Error(`navigation failed: ${nav.errorText}`);
       if (nav && !nav.loaderId) w.navDone = Date.now(); // same-document (fragment) navigation
@@ -1211,7 +1402,18 @@ async function handleCommand(cmd, args, token, session) {
       assertNoOpenDialog(tabId);
       const max = Math.min(Number(args.max_chars) || 12000, 50000);
       const r = await evaluate(tabId, `${READ_TEXT}(${max})`);
-      return `${r.title}  —  ${r.url}\n\n${r.text}`;
+      let text = r.text;
+      // Cross-origin frames the page-side reader can't enter (embedded docs, widgets, checkouts).
+      try {
+        for (const { f } of await readFrames(tabId, tabId, await snapshot(tabId, 1), [])) {
+          if (text.length >= max) break;
+          try {
+            const fr = await evaluate(f.target, `${READ_TEXT}(${max})`);
+            if (fr && fr.text) text += `\n\n[frame f${f.idx}: ${fr.url}]\n${fr.text}`;
+          } catch {}
+        }
+      } catch {}
+      return `${r.title}  —  ${r.url}\n\n${text.slice(0, max)}`;
     }
     case 'act': {
       const ops = args.ops || [];
