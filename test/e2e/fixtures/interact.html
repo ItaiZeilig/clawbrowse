@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Interact</title>
+<style>
+ body{font:14px sans-serif;margin:10px}
+ .menu{display:inline-block;position:relative} .menu .items{display:none;position:absolute;background:#eee;padding:6px} .menu:hover .items{display:block}
+ .col{display:inline-block;width:160px;min-height:80px;border:1px dashed #888;margin:6px;vertical-align:top;padding:4px}
+ .card{padding:6px;background:#def;margin:4px;cursor:grab}
+ #track{width:300px;height:10px;background:#ccc;position:relative;margin:20px 0}
+ #knob{width:20px;height:20px;background:#333;border-radius:50%;position:absolute;top:-5px;left:0;cursor:pointer}
+</style></head><body>
+<div class="menu"><button>Account</button><div class="items"><a href="#settings" onclick="o('settings')">Settings item</a></div></div>
+<button onmouseenter="document.getElementById('tip').hidden=false">Hover for tip</button><span id="tip" hidden><button onclick="o('tip action')">Tip action</button></span>
+<p><input id="field" placeholder="Shortcut field" onkeydown="log(event)"></p>
+<button ondblclick="o('double')">Double me</button>
+<button oncontextmenu="event.preventDefault();document.getElementById('ctx').hidden=false">Right me</button>
+<div id="ctx" hidden><button onclick="o('ctx copy')">Copy link</button></div>
+<div class="col" id="todo"><b>Todo</b><div class="card" draggable="true" id="cardA">Card A</div></div>
+<div class="col" id="done" ondragover="event.preventDefault()" ondrop="event.preventDefault();const id=event.dataTransfer.getData('text');this.appendChild(document.getElementById(id));o('dropped '+id)"><b>Done column</b></div>
+<div id="track"><div id="knob" role="slider" aria-label="Volume" aria-valuenow="0" tabindex="0"></div></div>
+<p id="keys"></p><p id="out"></p>
+<script>
+ function o(s){document.getElementById('out').textContent=s}
+ function log(e){ const k=[e.ctrlKey&&'Ctrl',e.metaKey&&'Meta',e.altKey&&'Alt',e.shiftKey&&'Shift',e.key].filter(Boolean).join('+'); document.getElementById('keys').textContent+=k+' '; }
+ document.getElementById('cardA').addEventListener('dragstart',e=>e.dataTransfer.setData('text',e.target.id));
+ // Pointer-driven custom slider
+ const knob=document.getElementById('knob'), track=document.getElementById('track'); let drag=false;
+ knob.addEventListener('pointerdown',e=>{drag=true;knob.setPointerCapture(e.pointerId)});
+ knob.addEventListener('pointermove',e=>{ if(!drag) return; const r=track.getBoundingClientRect(); const x=Math.max(0,Math.min(280,e.clientX-r.left-10)); knob.style.left=x+'px'; knob.setAttribute('aria-valuenow',Math.round(x/280*100)); });
+ knob.addEventListener('pointerup',()=>{drag=false; o('volume '+knob.getAttribute('aria-valuenow'))});
+</script></body></html>

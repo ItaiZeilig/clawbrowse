@@ -458,3 +458,70 @@ test('150 invisible ad iframes: ignored cheaply; the one visible cross-site fram
   assert.ok(ms < 250, `observe took ${ms.toFixed(0)}ms`);
   frameRef(t2, `localhost:${h.port}`, 'Cross button');
 });
+
+test('closed shadow roots (incl. closed-inside-closed) are perceived and actionable', { skip }, async () => {
+  const t = await h.goto('shadow.html');
+  await h.act({ op: 'click', ref: mustRef(t, 'Closed shadow button') }, { op: 'type', ref: mustRef(t, 'PIN'), text: '1234' });
+  assert.equal(await out(), 'closed clicked');
+  assert.equal(await h.js('window.__pin.value'), '1234');
+  const r = await h.cmd('read');
+  assert.ok(r.includes('Locked panel text'), r);
+});
+
+/* ----------------------------- richer interactions -------------------------- */
+
+test('hover opens a CSS :hover menu whose item is then clickable', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  assert.equal(ref(t, 'Settings item'), null);
+  const r = await h.act({ op: 'hover', ref: mustRef(t, 'Account') });
+  await h.act({ op: 'click', ref: mustRef(r, 'Settings item') });
+  assert.equal(await out(), 'settings');
+});
+
+test('hover fires mouseenter-revealed controls', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  const r = await h.act({ op: 'hover', ref: mustRef(t, 'Hover for tip') });
+  await h.act({ op: 'click', ref: mustRef(r, 'Tip action') });
+  assert.equal(await out(), 'tip action');
+});
+
+test('key chords, single characters, Shift and named keys reach the page', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  await h.act({ op: 'click', ref: mustRef(t, 'Shortcut field') },
+    { op: 'key', key: 'Control+k' }, { op: 'key', key: 'Shift+a' }, { op: 'key', key: '?' }, { op: 'key', key: 'PageDown' }, { op: 'key', key: 'Alt+Enter' });
+  assert.equal((await h.js(`document.getElementById('keys').textContent`)).trim(), 'Ctrl+k Shift+A ? PageDown Alt+Enter');
+  assert.equal(await h.js(`document.getElementById('field').value`), 'A?', 'printable keys type text; chords do not');
+});
+
+test('Mod+A selects all (macOS needs the editing command), then typing replaces it', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  const f = mustRef(t, 'Shortcut field');
+  await h.act({ op: 'type', ref: f, text: 'hello world' }, { op: 'key', key: 'Mod+a' }, { op: 'key', key: 'x' });
+  assert.equal(await h.js(`document.getElementById('field').value`), 'x');
+});
+
+test('double-click and right-click', { skip }, async () => {
+  let t = await h.goto('interact.html');
+  await h.act({ op: 'click', ref: mustRef(t, 'Double me'), count: 2 });
+  assert.equal(await out(), 'double');
+  t = await h.observe();
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Right me'), button: 'right' });
+  await h.act({ op: 'click', ref: mustRef(r, 'Copy link') });
+  assert.equal(await out(), 'ctx copy');
+});
+
+test('native HTML5 drag-and-drop onto a drop zone found by text', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  assert.match(t, /"Card A"\s+⇄ draggable/);
+  const r = await h.act({ op: 'drag', ref: mustRef(t, 'Card A'), to_text: 'Done column' });
+  assert.match(r, /html5 drop/);
+  assert.equal(await out(), 'dropped cardA');
+  assert.equal(await h.js(`document.getElementById('cardA').parentElement.id`), 'done');
+});
+
+test('pointer-driven custom slider drags by an offset', { skip }, async () => {
+  const t = await h.goto('interact.html');
+  await h.act({ op: 'drag', ref: mustRef(t, 'Volume'), dx: 140, dy: 0 });
+  const v = Number((await out()).replace('volume ', ''));
+  assert.ok(v >= 45 && v <= 55, `volume ${v}`);
+});

@@ -415,6 +415,12 @@ const SNAPSHOT = `(function(seed){
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
   ${MO_INSTALL}
+  // CLOSED shadow roots are invisible to page JS; the extension hands them to us via CDP
+  // (probeClosedRoots) keyed by host. sroot() = a host's shadow root, open or closed.
+  if(!cache.closed){ cache.closed=new WeakMap(); cache.probed=new WeakSet(); }
+  function sroot(n){ return n.shadowRoot || cache.closed.get(n) || null; }
+  cache.sroot=sroot;
+  var pendingHosts=[];
   function safe(e){ return ['password','hidden'].indexOf(e.type)<0; }
   // display:contents boxes (every <slot>, many design-system wrappers) have no box of their own, so
   // checkVisibility() says false even though their children render: judge those by their parent.
@@ -457,7 +463,7 @@ const SNAPSHOT = `(function(seed){
   // Semantic controls + custom clickables: any contenteditable, an inline onclick, or a
   // keyboard-focusable [tabindex] (framework buttons — React-Native-Web Pressables, design-system
   // divs — often expose only these). cursor:pointer clickables are added separately in collect().
-  var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[tabindex]:not([tabindex="-1"]),'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
+  var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[tabindex]:not([tabindex="-1"]),[draggable="true"],'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
   // Inputs whose value is SET (not typed): typing into these is unreliable, so type() routes them
   // through a value setter. The hint tells the agent the expected format.
   var SETTABLE={date:'YYYY-MM-DD',time:'HH:MM','datetime-local':'YYYY-MM-DDTHH:MM',month:'YYYY-MM',week:'YYYY-Www',color:'#rrggbb',range:''};
@@ -485,7 +491,7 @@ const SNAPSHOT = `(function(seed){
       if(lx==null){ var hr=t.getBoundingClientRect(); lx=hr.x+hr.width/2; ly=hr.y+hr.height/2; }
       var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
       var f=root.elementFromPoint(lx,ly), g=0;
-      while(f && f.shadowRoot && g++<16){ var inner=f.shadowRoot.elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
+      while(f && sroot(f) && g++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
       return !!f && (t===f || t.contains(f) || (t.control && t.control===f));
     }catch(_){ return true; }
   };
@@ -543,7 +549,9 @@ const SNAPSHOT = `(function(seed){
             }
           }catch(_){}
         }
-        if(n.shadowRoot){ M.watch(n.shadowRoot); walk(n.shadowRoot, dx, dy, depth+1); }
+        var sr=sroot(n);
+        if(sr){ M.watch(sr); walk(sr, dx, dy, depth+1); }
+        else if(n.localName.indexOf('-')>0 && !cache.probed.has(n) && pendingHosts.length<40 && sized(n)) pendingHosts.push(n); // custom element: may hide a closed root
         if(n.tagName==='IFRAME' || n.tagName==='FRAME'){
           var idoc=null; try{ idoc=n.contentDocument; }catch(_){}
           if(idoc && idoc.body){
@@ -590,7 +598,7 @@ const SNAPSHOT = `(function(seed){
       // Only accept it if it has a real label and isn't just a wrapper around an actual control
       // (or a <label> standing in for one), so we don't flood the table with layout containers.
       var ti=e.getAttribute('tabindex');
-      if(clk || e.hasAttribute('onclick') || (ti!==null && ti!=='-1')){
+      if(clk || e.hasAttribute('onclick') || (ti!==null && ti!=='-1') || e.getAttribute('draggable')==='true'){
         if(e.tagName==='LABEL' && e.control) continue;
         if(!(name(e)||'').trim() || e.querySelector(selector)) continue;
         rname='button';
@@ -607,6 +615,7 @@ const SNAPSHOT = `(function(seed){
     var aexp=e.getAttribute('aria-expanded'); if(aexp!=null) base.expanded=(aexp==='true');
     var asel=e.getAttribute('aria-selected'); if(asel!=null) base.selected=(asel==='true');
     if(e.required || e.getAttribute('aria-required')==='true') base.required=true;
+    if(e.getAttribute('draggable')==='true') base.draggable=true;
     // Only surface validation errors on fields the user (or agent) has put a value in, or that the
     // page itself flags, so an untouched required form isn't a wall of warnings.
     if(e.getAttribute('aria-invalid')==='true') base.invalid='invalid';
@@ -685,6 +694,7 @@ const SNAPSHOT = `(function(seed){
   // Guarded so a getter/DOM quirk while building ids can't blank the whole table.
   // Resolved to CDP frame ids by the extension (cross-origin frames): biggest first, so a real
   // embedded app/checkout wins over banner slots when there are many.
+  cache.pendingHosts=pendingHosts;
   cache.remoteEls=remoteEls.map(function(el){ var r=el.getBoundingClientRect(); return {el:el, a:r.width*r.height}; }).sort(function(p,q){ return q.a-p.a; }).slice(0,12).map(function(p){ return p.el; });
   var focusId=null;
   try{
@@ -711,7 +721,7 @@ const SNAPSHOT = `(function(seed){
     cache.byId[id]=identity(hit);
     return hit;
   };
-  return {url:location.href, title:document.title, vh:innerHeight, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, actions:actions};
+  return {url:location.href, title:document.title, vh:innerHeight, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, probe:pendingHosts.length, actions:actions};
   }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, omitted:0, actions:[]}; }
 })`;
 
@@ -730,6 +740,7 @@ function formatRow(a) {
   if (a.off === 'up') line += '  ↑ above view';
   else if (a.off === 'down') line += '  ↓ below view';
   else if (a.off === 'scroll') line += '  ↕ scrolled out of its box';
+  if (a.draggable) line += '  ⇄ draggable';
   if (a.covered) line += '  ⊘ covered';
   return line;
 }
@@ -770,10 +781,11 @@ const SIG = `JSON.stringify([location.href, document.title, [].map.call(document
 // children (shadow root, slots' assigned nodes, iframe document).
 const READ_TEXT = `(function(max){
   var main=document.querySelector('main')||document.body; if(!main) return {title:document.title,url:location.href,text:''};
-  var mark=new Set();
+  var mark=new Set(), C=window.__pawbrowse&&window.__pawbrowse.closed;
+  function sr(n){ return n.shadowRoot || (C&&C.get(n)) || null; }
   function scan(root,d){ if(d>12) return; var all; try{ all=root.querySelectorAll('*'); }catch(_){ return; }
     for(var i=0;i<all.length;i++){ var n=all[i], special=false;
-      if(n.shadowRoot){ special=true; scan(n.shadowRoot,d+1); }
+      if(sr(n)){ special=true; scan(sr(n),d+1); }
       if(n.tagName==='SLOT') special=true;
       if(n.tagName==='IFRAME'||n.tagName==='FRAME'){ var doc=null; try{ doc=n.contentDocument; }catch(_){} if(doc&&doc.body){ special=true; scan(doc,d+1); } }
       if(special){ for(var p=n; p && !mark.has(p); ){ mark.add(p); p=p.parentNode; if(p && p.nodeType===11) p=p.host; } }
@@ -783,7 +795,7 @@ const READ_TEXT = `(function(max){
   function vis(e){ try{ if(e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return true; return getComputedStyle(e).display==='contents'; }catch(_){ return true; } }
   function put(t){ if(t && len<max){ out.push(t); len+=t.length; } }
   function kids(n){
-    if(n.shadowRoot) return n.shadowRoot.childNodes;
+    if(sr(n)) return sr(n).childNodes;
     if(n.tagName==='SLOT'){ var a=n.assignedNodes({flatten:true}); return a.length?a:n.childNodes; }
     return n.childNodes;
   }
@@ -920,12 +932,43 @@ function routeRef(tabId, ref) {
   return { target: f.target, ref: m[2], frame: f };
 }
 
+// Hand CLOSED shadow roots of the custom elements a snapshot flagged to our isolated world:
+// DOM.describeNode(pierce) exposes them to CDP even though page JS can't reach them. Each host is
+// probed once per document. Returns how many roots were found.
+async function probeClosedRoots(target) {
+  const ctx = await worldFor(target);
+  let found = 0;
+  try {
+    const r = await sendCdp(target, 'Runtime.evaluate', { expression: 'window.__pawbrowse && window.__pawbrowse.pendingHosts', contextId: ctx, objectGroup: 'pawshadow' });
+    if (!r.result || !r.result.objectId) return 0;
+    const { result } = await sendCdp(target, 'Runtime.getProperties', { objectId: r.result.objectId, ownProperties: true });
+    for (const p of result) {
+      if (!/^\d+$/.test(p.name) || !p.value || !p.value.objectId) continue;
+      try {
+        const { node } = await sendCdp(target, 'DOM.describeNode', { objectId: p.value.objectId, depth: 0, pierce: true });
+        const root = (node.shadowRoots || []).find((x) => x.shadowRootType === 'closed');
+        if (!root) continue;
+        const { object } = await sendCdp(target, 'DOM.resolveNode', { backendNodeId: root.backendNodeId, executionContextId: ctx, objectGroup: 'pawshadow' });
+        await sendCdp(target, 'Runtime.callFunctionOn', { objectId: p.value.objectId, functionDeclaration: 'function(r){ window.__pawbrowse.closed.set(this, r); }', arguments: [{ objectId: object.objectId }] });
+        found++;
+      } catch {}
+    }
+    await sendCdp(target, 'Runtime.evaluate', { expression: 'window.__pawbrowse.pendingHosts.forEach(function(h){ window.__pawbrowse.probed.add(h); })', contextId: ctx });
+  } finally { sendCdp(target, 'Runtime.releaseObjectGroup', { objectGroup: 'pawshadow' }).catch(() => {}); }
+  return found;
+}
+
 async function snapshot(target, tries = 8) {
   const sk = typeof target === 'object' ? `${target.tabId}#${frameKey(target)}` : target;
   let last;
   for (let i = 0; i < tries; i++) {
     try {
-      const snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+      let snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+      // Closed shadow roots found: re-snapshot with them (nested closed hosts: a few rounds).
+      for (let k = 0; k < 3 && snap && snap.probe; k++) {
+        if (!(await probeClosedRoots(target).catch(() => 0))) break;
+        snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+      }
       if (snap) { if (snap.next > (refSeed.get(sk) || 1)) { refSeed.set(sk, snap.next); persistState(); } return snap; }
     } catch (e) { last = e; }
     if (i < tries - 1) await sleep(120);
@@ -956,6 +999,7 @@ async function observe(tabId) {
 // (elementFromPoint containment) so we never click a stale/covered/wrong target.
 async function resolveHit(tabId, ref, opts) {
   const forFill = opts && opts.fill ? 'true' : 'false';
+  const noScroll = opts && opts.noScroll ? 'true' : 'false', noHit = opts && opts.noHit ? 'true' : 'false';
   const R = JSON.stringify(String(ref));
   return evaluate(tabId, `(function(){
     var c=window.__pawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
@@ -971,7 +1015,7 @@ async function resolveHit(tabId, ref, opts) {
     // Click the control's visible SURFACE: a styled checkbox's <label>, or the element itself.
     var s=c.surface?c.surface(e):e;
     if(!s) return {error:'element not visible'};
-    s.scrollIntoView({block:'center',inline:'center'});
+    if(!${noScroll}) s.scrollIntoView({block:'center',inline:'center'});
     var r=s.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
     // Frame-local center (in the element's own frame viewport)...
     var lx=r.x+r.width/2, ly=r.y+r.height/2;
@@ -988,9 +1032,11 @@ async function resolveHit(tabId, ref, opts) {
     // Hit-test in the surface's OWN root (document / shadow root / iframe doc) with frame-local
     // coords, descending through nested open shadow roots, so shadow-DOM and iframe elements
     // aren't falsely reported as covered.
+    if(${noHit}) return {x:x, y:y};
     var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
     var f=root.elementFromPoint(lx,ly), k=0;
-    while(f && f.shadowRoot && k++<16){ var inner=f.shadowRoot.elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
+    var sroot=function(n){ return n.shadowRoot || (c.closed && c.closed.get(n)) || null; };
+    while(f && sroot(f) && k++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
     if(!f || !(s===f || s.contains(f) || (s.control && s.control===f))) return {error:'element is covered by another element (dismiss the overlay/dialog first)'};
     return {x:x, y:y};
   })()`);
@@ -1070,10 +1116,14 @@ async function centerOfText(tabId, text) {
   })()`);
 }
 
-async function clickAt(tabId, x, y) {
+async function clickAt(tabId, x, y, opts) {
+  const button = (opts && opts.button) || 'left', count = Math.max(1, Math.min(3, Number(opts && opts.count) || 1));
   await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
-  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  // A double/triple click is successive press/release pairs with a rising clickCount.
+  for (let n = 1; n <= count; n++) {
+    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: n });
+    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: n });
+  }
 }
 
 /* ------------------------------ Waiting (settle) ---------------------------- *
@@ -1220,7 +1270,76 @@ const KEYMAP = {
   ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
   ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
   ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+  Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
+  Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 },
+  Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+  End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 },
+  PageUp: { key: 'PageUp', code: 'PageUp', windowsVirtualKeyCode: 33 },
+  PageDown: { key: 'PageDown', code: 'PageDown', windowsVirtualKeyCode: 34 },
 };
+
+// "Shift+Tab", "Mod+A" (Cmd on macOS, Ctrl elsewhere), "Control+Enter", "F5", "a", "?" ...
+const MODS = { Alt: 1, Option: 1, Control: 2, Ctrl: 2, Meta: 4, Cmd: 4, Command: 4, Shift: 8, Mod: IS_MAC ? 4 : 2 };
+// macOS editing shortcuts aren't bound to Cmd+key for synthetic events: they need the command name.
+const MAC_COMMANDS = { a: 'selectAll', c: 'copy', v: 'paste', x: 'cut', z: 'undo' };
+function keyDef(name) {
+  if (KEYMAP[name]) return { ...KEYMAP[name] };
+  if (name.length === 1) {
+    const up = name.toUpperCase();
+    const alnum = /[a-z0-9]/i.test(name);
+    return { key: name, code: /[a-z]/i.test(name) ? `Key${up}` : /[0-9]/.test(name) ? `Digit${name}` : '', windowsVirtualKeyCode: alnum ? up.charCodeAt(0) : name.charCodeAt(0), text: name };
+  }
+  const f = /^F(\d{1,2})$/.exec(name);
+  if (f) return { key: name, code: name, windowsVirtualKeyCode: 111 + Number(f[1]) };
+  return null;
+}
+async function pressKey(tabId, combo) {
+  const parts = String(combo).split(/\+(?!$)/); // "Control++" -> ["Control", "+"]
+  let mods = 0;
+  for (const m of parts.slice(0, -1)) { if (!(m in MODS)) return `unknown modifier "${m}"`; mods |= MODS[m]; }
+  const def = keyDef(parts[parts.length - 1]);
+  if (!def) return `key "${combo}" not supported`;
+  if ((mods & 8) && def.text && def.text.length === 1) { def.key = def.text = def.text.toUpperCase(); }
+  if (mods & 6) delete def.text; // Ctrl/Cmd chords are shortcuts, not text
+  const commands = IS_MAC && (mods & 4) && MAC_COMMANDS[String(def.key).toLowerCase()] ? [(mods & 8) && def.key.toLowerCase() === 'z' ? 'redo' : MAC_COMMANDS[def.key.toLowerCase()]] : undefined;
+  await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: def.text ? 'keyDown' : 'rawKeyDown', ...def, modifiers: mods, commands });
+  await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...def, text: undefined, modifiers: mods });
+  return null;
+}
+
+const dragIntercepts = new Map(); // tabId -> drag data captured by Input.dragIntercepted
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method === 'Input.dragIntercepted' && source.tabId != null) dragIntercepts.set(source.tabId, params.data);
+});
+
+async function drag(tabId, from, to) {
+  const mouse = (type, p, extra) => sendCdp(tabId, 'Input.dispatchMouseEvent', { type, x: p.x, y: p.y, button: 'left', ...extra });
+  dragIntercepts.delete(tabId);
+  await sendCdp(tabId, 'Input.setInterceptDrags', { enabled: true }).catch(() => {});
+  try {
+    await mouse('mouseMoved', from);
+    await mouse('mousePressed', from, { clickCount: 1, buttons: 1 });
+    // Move in steps: libraries only start a drag after a few pixels and track intermediate moves.
+    const steps = 8;
+    for (let i = 1; i <= steps; i++) {
+      const p = { x: Math.round(from.x + (to.x - from.x) * i / steps), y: Math.round(from.y + (to.y - from.y) * i / steps) };
+      await mouse('mouseMoved', p, { buttons: 1 });
+      const data = dragIntercepts.get(tabId);
+      if (data) {
+        // Native HTML5 drag started: deliver it to the drop target and finish there.
+        for (const type of ['dragEnter', 'dragOver', 'drop']) await sendCdp(tabId, 'Input.dispatchDragEvent', { type, x: to.x, y: to.y, data });
+        await mouse('mouseReleased', to, { clickCount: 1 });
+        return ' (html5 drop)';
+      }
+      await sleep(16);
+    }
+    await mouse('mouseReleased', to, { clickCount: 1 });
+    return '';
+  } finally {
+    dragIntercepts.delete(tabId);
+    sendCdp(tabId, 'Input.setInterceptDrags', { enabled: false }).catch(() => {});
+  }
+}
 
 async function runOp(tabId, op) {
   const pol = acting.get(tabId);
@@ -1247,8 +1366,37 @@ async function runOp(tabId, op) {
       const r = await resolveHit(T, REF);
       if (r.error) return `${op.ref}: ${r.error}`;
       const p = await top(r.x, r.y);
-      await clickAt(tabId, p.x, p.y);
-      return `click ${op.ref}`;
+      const button = ['right', 'middle'].includes(op.button) ? op.button : 'left';
+      await clickAt(tabId, p.x, p.y, { button, count: op.count });
+      return `${op.count > 1 ? `${op.count}x ` : ''}${button !== 'left' ? `${button}-` : ''}click ${op.ref}`;
+    }
+    case 'hover': {
+      const r = await resolveHit(T, REF);
+      if (r.error) return `${op.ref}: ${r.error}`;
+      const p = await top(r.x, r.y);
+      await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
+      return `hover ${op.ref}`;
+    }
+    case 'drag': {
+      // Drag ref onto to:"eN" (or by dx/dy pixels). Pointer-driven widgets (sliders, sortable
+      // lists) get a real press-move-release; native HTML5 drag-and-drop is intercepted by CDP and
+      // replayed as dragEnter/dragOver/drop on the target.
+      const a = await resolveHit(T, REF);
+      if (a.error) return `${op.ref}: ${a.error}`;
+      const from = await top(a.x, a.y);
+      let to;
+      if (op.to_text) {
+        const c = await centerOfText(tabId, op.to_text);
+        if (!c) return `drag: drop target "${op.to_text}" not found`;
+        to = c;
+      } else if (op.to) {
+        const rt2 = routeRef(tabId, op.to);
+        if (!rt2.target) return `${op.to}: unknown frame (observe again)`;
+        const b = await resolveHit(rt2.target, rt2.ref, { noScroll: true, noHit: true });
+        if (b.error) return `${op.to}: ${b.error}`;
+        to = rt2.frame ? await (async () => { const off = await frameOffset(tabId, rt2.frame); return { x: Math.round(b.x + off.x), y: Math.round(b.y + off.y) }; })() : { x: b.x, y: b.y };
+      } else to = { x: from.x + Number(op.dx || 0), y: from.y + Number(op.dy || 0) };
+      return drag(tabId, from, to).then((how) => `drag ${op.ref} → ${op.to || (op.to_text ? `"${op.to_text}"` : `${op.dx || 0},${op.dy || 0}`)}${how}`);
     }
     case 'click_text': {
       const c = await centerOfText(tabId, op.text);
@@ -1308,11 +1456,8 @@ async function runOp(tabId, op) {
       return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
     }
     case 'key': {
-      const k = KEYMAP[op.key];
-      if (!k) return `key "${op.key}" not supported`;
-      await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', ...k });
-      await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyUp', ...k });
-      return `key ${op.key}`;
+      const err = await pressKey(tabId, op.key);
+      return err || `key ${op.key}`;
     }
     case 'scroll': {
       const dy = Number(op.dy ?? 600);
