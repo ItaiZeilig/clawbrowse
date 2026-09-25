@@ -25,6 +25,42 @@ Ported and extended the unmerged `planner-state-final` snapshot work from browse
 - `read` now includes open shadow-DOM, slotted and same-origin iframe text.
 - `{op:"scroll", ref}` scrolls the panel that contains that control, not the page.
 
+### Added — reach every kind of page
+- **Cross-origin iframes.** Embedded checkouts, logins and widgets are read and driven: cross-site
+  frames are attached as child sessions (`chrome.debugger` `sessionId`, Chrome 125+), and
+  cross-origin same-site and sandboxed frames get their own isolated world. Refs look like
+  `f2.e5`, clicks are offset by the frame's position, dialogs raised inside frames are answered,
+  and `read` includes frame text. Invisible ad and tracking frames are skipped without cost.
+- **Closed shadow roots**, including a closed root nested inside another, via CDP
+  (`DOM.describeNode` with pierce).
+- **WebMCP.** Tools a page registers (`navigator.modelContext.registerTool` or
+  `<form toolname>`) are listed at the top of the table with typed signatures, and
+  `{op:"tool"}` calls one. Output is marked as untrusted.
+- **`browser_screenshot`** returns a JPEG in CSS pixels with the table's refs drawn on it.
+  `{op:"click_xy"}` then clicks by image coordinates, for canvas apps (Docs/Sheets, Figma,
+  maps) and anything else the table can't express.
+- **More ways to act:** `hover`; `drag` (pointer widgets, and native HTML5 drag-and-drop via
+  `Input.setInterceptDrags`), with the target given by ref, text or offset; any key or chord
+  (`Shift+Tab`, `Mod+A`, F-keys, single characters); double-click and right-click;
+  `select values:[…]` for `<select multiple>`. Draggable elements are marked `⇄`.
+- **`observe find:"…"`** searches every control on the page and returns only the matches.
+  **`text:true`** adds the visible text in reading order.
+- Nameless icon buttons are labelled `icon:trash` or `testid:share-button` instead of `"button"`.
+
+### Changed — faster and cheaper
+- **Waits follow what the page is actually doing:** navigation (commit-aware), fetch/XHR started
+  by the action (including chained requests), then a short DOM-quiet window, all with caps. The
+  table after a click that fetches is no longer stale; a debounced search returns its results;
+  `navigate` to a fast page drops from ~380ms to ~100ms; a click that does nothing returns in
+  ~30ms. Analytics beacons, polling and constantly-animating pages no longer hold a wait until
+  its cap.
+- **Delta results.** When `act` leaves the page mostly unchanged, it returns only the new or
+  changed rows plus the refs that are gone, e.g. 2 rows instead of 60. `observe` always returns
+  the full table.
+- **Refs survive re-renders that replace nodes**, both within a batch and across observations.
+  A new element takes over a vanished element's ref only when role, label and row context match
+  one element exactly.
+
 ### Fixed
 - **Pages could blind PawBrowse.** All page-side code now runs in a CDP isolated world, so a site
   that patches `Array.prototype`/`JSON`/`Element.prototype` or defines `window.__pawbrowse` no longer
@@ -42,9 +78,11 @@ Ported and extended the unmerged `planner-state-final` snapshot work from browse
 
 ### Tests
 - New real-browser e2e suite (`npm run test:e2e`, also in CI): it loads the shipped `background.js`
-  against headless Chrome through a `chrome.debugger` shim and checks 41 adversarial scenarios
-  against ground truth read from the page. The previous code passes 14 of them and hangs on the
-  dialog cases.
+  against headless Chrome through a `chrome.debugger` shim and checks adversarial scenarios
+  against ground truth read from the page (now 75 scenarios). The previous code passes 14 of them
+  and hangs on the dialog cases.
+- Opt-in suite driving the real unpacked extension in Chrome for Testing through the real MCP
+  server (`CFT_PATH=… npm run test:e2e`).
 
 ## [0.5.1] - 2026-09-23
 

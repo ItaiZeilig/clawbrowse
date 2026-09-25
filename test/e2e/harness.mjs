@@ -153,7 +153,9 @@ export async function launch(opts = {}) {
     setTimeout, clearTimeout, setInterval, clearInterval, console, JSON, Promise, Error, Math, Number, String, Object, Array, Map, Set,
   });
   vm.runInContext(fs.readFileSync(BACKGROUND, 'utf8'), ctx, { filename: 'background.js' });
-  const ext = vm.runInContext('({ handleCommand, SNAPSHOT, evaluate, snapshot, childSessions, readFrames, remoteFrameIds, frameOffset })', ctx);
+  // Tolerant export so older background.js versions (for before/after comparisons) still load.
+  const ext = vm.runInContext(`({ ${['handleCommand', 'SNAPSHOT', 'evaluate', 'snapshot', 'childSessions', 'readFrames', 'remoteFrameIds', 'frameOffset']
+    .map((n) => `${n}: typeof ${n} === 'undefined' ? undefined : ${n}`).join(', ')} })`, ctx);
 
   const tab0 = await newTab();
   const h = {
