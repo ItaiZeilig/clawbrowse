@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "pawbrowse",
   "display_name": "PawBrowse",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Let Claude drive your real, logged-in Chrome. Fast element-table control, open source, no keys.",
   "author": {
     "name": "Itai Zeilig",

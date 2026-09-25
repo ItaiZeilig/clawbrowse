@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-25
+
 ### Added — perception v2 (sees and drives far more real-world HTML)
 Ported and extended the unmerged `planner-state-final` snapshot work from browser-use/jev-ultrafast.
 - **Styled checkboxes, radios, switches and file pickers** whose native input is hidden (opacity 0,
