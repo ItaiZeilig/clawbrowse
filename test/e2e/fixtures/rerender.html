@@ -2,7 +2,8 @@
 <ul id="list"></ul><p id="out"></p>
 <script>
  // Every state change re-renders the whole list with innerHTML: all nodes are replaced.
- let tasks=['Buy milk','Walk dog','Pay rent','Call mom','Fix bike'].map(t=>({t,done:false}));
+ const n=Number(new URLSearchParams(location.search).get('n'))||0;
+ let tasks=(n?Array.from({length:n},(_,i)=>'Task '+i):['Buy milk','Walk dog','Pay rent','Call mom','Fix bike']).map(t=>({t,done:false}));
  function render(){ document.getElementById('list').innerHTML=tasks.map((x,i)=>
    '<li>'+x.t+' <button onclick="done('+i+')">'+(x.done?'Undo':'Done')+'</button> <button onclick="del('+i+')">Delete</button></li>').join('');
    document.getElementById('out').textContent=tasks.filter(x=>x.done).map(x=>x.t).join(',')+'|'+tasks.map(x=>x.t).join(','); }

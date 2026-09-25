@@ -94,7 +94,8 @@ test('unlabelled fields get a nearby label; contenteditable gets its placeholder
   const r = await h.act({ op: 'type', ref: mustRef(t, 'Name', 'fill'), text: 'Ada' }, { op: 'type', ref: mustRef(t, 'Write a note', 'fill'), text: 'hi there' });
   assert.equal(await h.js(`document.getElementById('nolabel').value`), 'Ada');
   assert.equal(await h.js(`document.getElementById('rte').innerText.trim()`), 'hi there');
-  assert.match(r, /"Email" \(required\).*⚠ "Please include an '@'/);
+  void r;
+  assert.match(await h.observe(), /"Email" \(required\).*⚠ "Please include an '@'/);
 });
 
 /* ------------------------------- hostile pages ----------------------------- */
@@ -558,4 +559,24 @@ test('screenshot is in CSS pixels even on a 2x display, and click_xy hits a canv
     await w.act({ op: 'click_xy', x: 21 + 300, y: 21 + 140 });
     assert.equal(await w.js(`document.getElementById('out').textContent`), 'approved');
   } finally { await w.close(); }
+});
+
+/* ------------------------------ delta act results ---------------------------- */
+
+test('act on a big unchanged page returns only the changed rows (and says so); observe is full', { skip }, async () => {
+  const t = await h.goto('rerender.html?n=30');
+  const rows = (x) => x.split('\n').filter((l) => /^e\d/.test(l)).length;
+  assert.ok(rows(t) >= 60, t);
+  const r = await h.act({ op: 'click', ref: rowRef(t, 'Done', 'Task 7') });
+  assert.match(r, /only changes shown: \d+ new\/changed row\(s\); \d+ unchanged row\(s\) omitted/);
+  assert.match(r, /click\s+"Undo"/, 'the changed row is shown');
+  assert.match(r, /"Delete" in "Task 7 Undo"/);
+  // Re-render replaced every node, yet unchanged rows kept their refs (so the agent's refs still work).
+  const t8 = rowRef(t, 'Done', 'Task 8');
+  await h.act({ op: 'click', ref: t8 });
+  assert.match(await out(), /Task 7,Task 8\|/);
+  assert.ok(rows(r) <= 4, `delta should be tiny:\n${r}`);
+  assert.equal(rows(await h.observe()), rows(t), 'observe always returns the full table');
+  const d = await h.act({ op: 'click', ref: rowRef(await h.observe(), 'Delete', 'Task 3') });
+  assert.match(d, /gone: /, 'removed refs are listed');
 });

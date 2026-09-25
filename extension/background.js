@@ -304,7 +304,7 @@ function assertNoOpenDialog(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   watches.delete(tabId);
-  openDialogs.delete(tabId); acting.delete(tabId); dialogLog.delete(tabId); lastTable.delete(tabId);
+  openDialogs.delete(tabId); acting.delete(tabId); dialogLog.delete(tabId); lastTable.delete(tabId); lastFull.delete(tabId);
   worlds.delete(tabId);
   refSeed.delete(tabId);
   const owner = tabOwner.get(tabId);
@@ -414,7 +414,8 @@ const SNAPSHOT = `(function(seed){
   // A NEW document continues numbering from where the tab's previous document stopped (seed), so a
   // ref held over from the last page can never silently name a different element on this one.
   var cache = window.__pawbrowse || (window.__pawbrowse = {ids:new WeakMap(), nodes:new Map(), next:Math.max(1,seed|0), byId:{}});
-  function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
+  var fresh=new Set(); // node ids first allocated during this snapshot
+  function identity(e){ if(!cache.ids.has(e)){ cache.ids.set(e, cache.next); fresh.add(cache.next); cache.next++; } var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
   ${MO_INSTALL}
   // CLOSED shadow roots are invisible to page JS; the extension hands them to us via CDP
@@ -698,6 +699,28 @@ const SNAPSHOT = `(function(seed){
   // embedded app/checkout wins over banner slots when there are many.
   cache.pendingHosts=pendingHosts;
   cache.remoteEls=remoteEls.map(function(el){ var r=el.getBoundingClientRect(); return {el:el, a:r.width*r.height}; }).sort(function(p,q){ return q.a-p.a; }).slice(0,12).map(function(p){ return p.el; });
+  // Keep refs stable across re-renders that REPLACE nodes: a brand-new element whose identity
+  // (role + label + row context) uniquely matches an element that vanished since the last snapshot
+  // takes over its node id, so "e12" keeps meaning "Done in Task 7" and the agent's refs survive.
+  try{
+    var gone={}, gcount={}, ncount={}, k2;
+    Object.keys(cache.byId||{}).forEach(function(id){
+      var nid=cache.byId[id]; if(cache.nodes.has(nid)) return; // still on the page
+      var fp=cache.fps&&cache.fps[id]; if(!fp||!cache.guards[id]) return;
+      k2=cache.guards[id]+'\u0002'+(fp.ctx||''); gone[k2]=nid; gcount[k2]=(gcount[k2]||0)+1;
+    });
+    var keyOf=function(a){ return cache.guard(cache.nodes.get(a.node))+'\u0002'+(a.ctx||''); };
+    actions.forEach(function(a){ if(fresh.has(a.node)){ k2=keyOf(a); ncount[k2]=(ncount[k2]||0)+1; } });
+    actions.forEach(function(a){
+      if(!fresh.has(a.node)) return;
+      k2=keyOf(a);
+      if(gcount[k2]!==1 || ncount[k2]!==1) return; // ambiguous: never guess
+      var el=cache.nodes.get(a.node), old=gone[k2];
+      cache.nodes.delete(a.node); cache.ids.set(el, old); cache.nodes.set(old, el);
+      actions.forEach(function(b){ if(b.node===a.node && b!==a) b.node=old; });
+      a.node=old; delete gcount[k2];
+    });
+  }catch(_){}
   var focusId=null;
   try{
     cache.byId={}; cache.guards={}; cache.fps={}; var used={};
@@ -987,11 +1010,37 @@ const lastTable = new Map(); // tabId -> table text (without the header lines th
 // it, and that alone must not count as "the page changed".
 function tableBody(t) { return String(t).split('\n').map((l) => l.replace(/^(f\d+\.)?e\d+(_\d+)?\s+/, '').replace(/ {2}· {2}focus e\S+$/, '')).join('\n'); }
 
+// What the agent last saw, per tab (full table text), so act() can answer with just the rows that
+// changed. Same document + mostly-unchanged table => delta; otherwise the full table.
+const lastFull = new Map();
+const ROW_ID = /^((?:f\d+\.)?e\d+(?:_\d+)?)\s/;
+function deltaTable(prev, cur) {
+  if (!prev) return null;
+  const P = prev.split('\n'), C = cur.split('\n');
+  if (P[0] !== C[0]) return null; // title/url changed: a different page, send it whole
+  const prevRows = new Map();
+  for (const l of P) { const m = ROW_ID.exec(l); if (m) prevRows.set(m[1], l); }
+  const out = [], ids = new Set();
+  let rows = 0, unchanged = 0;
+  for (const l of C) {
+    const m = ROW_ID.exec(l);
+    if (!m) { out.push(l); continue; } // headers, frame and tool lines: always
+    rows++; ids.add(m[1]);
+    if (prevRows.get(m[1]) === l) unchanged++; else out.push(l);
+  }
+  if (rows < 12 || unchanged < rows * 0.5) return null; // small table or big change: whole is clearer
+  const gone = [...prevRows.keys()].filter((id) => !ids.has(id));
+  const at = out.findIndex((l) => l.startsWith('scroll ')) + 1 || 1;
+  out.splice(at, 0, `(only changes shown: ${rows - unchanged} new/changed row(s); ${unchanged} unchanged row(s) omitted${gone.length ? `; gone: ${gone.slice(0, 40).join(', ')}${gone.length > 40 ? ' …' : ''}` : ''} — browser_observe for the full table)`);
+  return out.join('\n');
+}
+
 async function observe(tabId) {
   const snap = await snapshot(tabId);
   if (snap) snap.frameSnaps = await readFrames(tabId, tabId, snap, []);
   const t = formatTable(snap).replace('\n', `\n${formatTools(tabId)}`.replace(/\n$/, '') + '\n').replace(/\n\n/, '\n');
   lastTable.set(tabId, tableBody(t));
+  lastFull.set(tabId, t);
   return t;
 }
 
@@ -1698,7 +1747,7 @@ async function handleCommand(cmd, args, token, session) {
           if (op.op !== 'wait') await settle(tabId, i === ops.length - 1 ? 4000 : 2500, t0, { grace: op.op === 'type' ? 400 : 0 });
         }
         const after = await evaluate(tabId, SIG).catch(() => null);
-        const seen = lastTable.get(tabId);
+        const seen = lastTable.get(tabId), seenFull = lastFull.get(tabId);
         // The ops already executed; a failed post-action read (page navigating) must NOT make
         // the caller think they failed and retry them.
         let table;
@@ -1708,7 +1757,7 @@ async function handleCommand(cmd, args, token, session) {
         if (table == null) {
           return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n(ops executed; the page is navigating and could not be read yet — call browser_observe next. Do NOT re-run these ops.)`;
         }
-        return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n${table}`;
+        return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n${(changed && deltaTable(seenFull, table)) || table}`;
       });
     }
     case 'screenshot': {
