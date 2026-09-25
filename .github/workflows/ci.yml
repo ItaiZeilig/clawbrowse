@@ -21,3 +21,7 @@ jobs:
           node --check extension/options.js
       - name: Round-trip test
         run: npm test
+      - name: Perception e2e (real headless Chrome)
+        run: npm run test:e2e
+        env:
+          CHROME_PATH: /usr/bin/google-chrome

@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node mcp/server.mjs",
-    "test": "node --test --test-timeout=15000 --test-force-exit test/*.test.mjs"
+    "test": "node --test --test-timeout=15000 --test-force-exit test/*.test.mjs",
+    "test:e2e": "node --test --test-timeout=60000 --test-concurrency=1 test/e2e/*.e2e.mjs"
   },
   "repository": {
     "type": "git",

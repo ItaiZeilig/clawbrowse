@@ -1,0 +1,43 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Widgets</title>
+<style>
+ body{font:14px sans-serif;margin:20px}
+ .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+ .ghost{opacity:0;position:absolute;inset:0;margin:0;cursor:pointer}
+ .tile{position:relative;display:inline-block;padding:10px;border:1px solid #999;margin:4px}
+ .switch input{display:none} .switch span{display:inline-block;width:40px;height:20px;background:#ccc;border-radius:10px}
+ .peer{opacity:0;width:0;height:0;position:absolute}
+</style></head><body>
+<h1>Filters</h1>
+<!-- 1. Tailwind "peer" pattern: 0x0 opacity-0 input, visible label -->
+<label id="lbl-wifi"><input class="peer" type="checkbox" id="wifi"> Free WiFi</label>
+<!-- 2. sr-only checkbox + label for= -->
+<input class="sr-only" type="checkbox" id="pool"><label for="pool">Pool</label>
+<!-- 3. display:none input inside switch label -->
+<label class="switch"><input type="checkbox" id="dark"><span></span> Dark mode</label>
+<!-- 4. opacity-0 radio stretched over a visible tile (card radio) -->
+<div class="tile">Economy<input class="ghost" type="radio" name="cls" id="eco" aria-label="Economy class"></div>
+<div class="tile">Business<input class="ghost" type="radio" name="cls" id="biz" aria-label="Business class"></div>
+<!-- 5. file input hidden behind a styled label -->
+<label for="cv" style="border:1px solid;padding:4px">Upload CV</label><input type="file" id="cv" style="display:none">
+<hr>
+<form id="f" onsubmit="event.preventDefault();document.getElementById('out').textContent='submitted '+new FormData(this).get('when')">
+<label>Departure <input type="date" name="when" id="when"></label>
+<label>Time <input type="time" id="t"></label>
+<label>Local <input type="datetime-local" id="dtl"></label>
+<label>Month <input type="month" id="mon"></label>
+<label>Week <input type="week" id="wk"></label>
+<label>Budget <input type="range" id="budget" min="0" max="1000" step="50" value="200"></label>
+<label>Color <input type="color" id="col" value="#ff0000"></label>
+<label>Guests <input type="number" id="guests" min="1" max="9" value="2"></label>
+<label>Email <input type="email" id="email" required value="not-an-email"></label>
+<div><label>Name</label><div><input id="nolabel" type="text"></div></div>
+<div contenteditable="true" id="rte" data-placeholder="Write a note" style="border:1px solid;min-height:30px"></div>
+<button>Search</button>
+</form>
+<p id="out"></p>
+<script>
+ document.getElementById('when').addEventListener('input', e => document.getElementById('out').textContent = 'date:' + e.target.value);
+ document.getElementById('cv').addEventListener('change', e => document.getElementById('out').textContent = 'file:' + e.target.files[0].name);
+ for (const id of ['wifi','pool','dark','eco','biz']) document.getElementById(id).addEventListener('change', e => document.getElementById('out').textContent = id + '=' + e.target.checked);
+</script>
+</body></html>

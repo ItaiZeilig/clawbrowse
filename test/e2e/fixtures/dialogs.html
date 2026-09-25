@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Dialogs</title></head><body>
+<button onclick="o(confirm('Really delete?') ? 'confirmed' : 'cancelled')">Delete account</button>
+<button onclick="alert('Saved!'); o('after alert')">Save</button>
+<button onclick="o('prompt:' + prompt('Your name?'))">Ask name</button>
+<button onclick="setTimeout(()=>alert('late'), 100); o('scheduled')">Late alert</button>
+<p id="out"></p>
+<script>function o(s){document.getElementById('out').textContent=s}</script>
+</body></html>

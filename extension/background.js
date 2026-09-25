@@ -21,7 +21,8 @@ let reconnectTimer = null;
 const attachedTabs = new Set();           // tabIds we currently hold a debugger on
 const sessions = new Map();               // sessionId -> { activeTabId, createdTabs:Set, groupId, num, color }
 const tabOwner = new Map();               // tabId -> sessionId (so sessions don't steal each other's tabs)
-const chains = new Map();                 // sessionId -> Promise (serialize commands within a session)
+const chains = new Map();
+const refSeed = new Map();                // tabId -> next unused ref number (see SNAPSHOT: refs never repeat within a tab)                 // sessionId -> Promise (serialize commands within a session)
 let sessionCounter = 0;
 let colorCursor = 0;
 // PawBrowse's own group identity — deliberately NOT Claude-in-Chrome's blue "Claude" group.
@@ -44,7 +45,7 @@ function persistState() {
     try {
       const ser = {};
       for (const [k, v] of sessions) ser[k] = { activeTabId: v.activeTabId, createdTabs: [...v.createdTabs], groupId: v.groupId, num: v.num, color: v.color };
-      await chrome.storage.session.set({ pawbrowse_state: { sessions: ser, tabOwner: [...tabOwner], sessionCounter, colorCursor } });
+      await chrome.storage.session.set({ pawbrowse_state: { sessions: ser, tabOwner: [...tabOwner], sessionCounter, colorCursor, refSeed: [...refSeed] } });
     } catch {}
   }, 250);
   persistTimer.unref?.();
@@ -59,6 +60,7 @@ const rehydrated = (async () => {
     for (const [t, sess] of (st.tabOwner || [])) if (!tabOwner.has(t)) tabOwner.set(t, sess);
     if (typeof st.sessionCounter === 'number') sessionCounter = Math.max(sessionCounter, st.sessionCounter);
     if (typeof st.colorCursor === 'number') colorCursor = Math.max(colorCursor, st.colorCursor);
+    for (const [t, n] of (st.refSeed || [])) refSeed.set(t, Math.max(refSeed.get(t) || 1, n));
   } catch {}
 })();
 
@@ -160,12 +162,42 @@ function sendCdp(tabId, method, params = {}) {
   });
 }
 
-async function evaluate(tabId, expression) {
-  const r = await sendCdp(tabId, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+// All of PawBrowse's page-side code runs in its own ISOLATED WORLD (like an extension content
+// script / Playwright's utility world): it shares the DOM with the page but not its JS globals, so a
+// page that monkey-patches Array.prototype / JSON / Element.prototype, or that squats on our cache
+// name, can't blind or steer the snapshot. One world per tab's main frame; a navigation destroys it
+// and the next call transparently recreates it.
+const worlds = new Map(); // tabId -> executionContextId
+
+async function worldFor(tabId) {
+  const cached = worlds.get(tabId);
+  if (cached != null) return cached;
+  const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree');
+  const { executionContextId } = await sendCdp(tabId, 'Page.createIsolatedWorld', { frameId: frameTree.frame.id, worldName: 'pawbrowse' });
+  worlds.set(tabId, executionContextId);
+  return executionContextId;
+}
+
+async function evaluate(tabId, expression, opts) {
+  let r;
+  for (let attempt = 0; ; attempt++) {
+    const contextId = await worldFor(tabId);
+    try {
+      r = await sendCdp(tabId, 'Runtime.evaluate', { expression, contextId, returnByValue: !(opts && opts.handle), awaitPromise: true });
+      break;
+    } catch (e) {
+      // The world died with its previous document (navigation/reload) BEFORE this call: make a fresh
+      // one and retry once. NOT when the context was destroyed DURING the call ("Execution context
+      // was destroyed") — the expression may have already acted (e.g. a select that navigated) and
+      // re-running it on the new page would act twice.
+      worlds.delete(tabId);
+      if (attempt >= 1 || !/Cannot find context/i.test(e.message)) throw e;
+    }
+  }
   if (r && r.exceptionDetails) {
     throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text || 'evaluation error');
   }
-  return r.result.value;
+  return opts && opts.handle ? r.result : r.result.value;
 }
 
 // Attach to a SPECIFIC tab and keep it attached (many tabs can be attached at once, one per
@@ -201,15 +233,61 @@ async function attach(tabId) {
 }
 
 function detach(tabId) {
-  return new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; attachedTabs.delete(tabId); resolve(); }));
+  return new Promise((resolve) => chrome.debugger.detach({ tabId }, () => { void chrome.runtime.lastError; attachedTabs.delete(tabId); worlds.delete(tabId); resolve(); }));
 }
 
-chrome.debugger.onDetach.addListener((source) => { if (source.tabId != null) attachedTabs.delete(source.tabId); });
+chrome.debugger.onDetach.addListener((source) => { if (source.tabId != null) { attachedTabs.delete(source.tabId); worlds.delete(source.tabId); } });
+
+// JavaScript dialogs (alert/confirm/prompt/beforeunload) block the page's main thread, so every CDP
+// call into the tab would hang until someone clicks the dialog. While PawBrowse is ACTING on a tab
+// it answers them itself: alerts are accepted, confirm/prompt/beforeunload are DISMISSED unless the
+// op opted in with dialog:"accept" (a destructive confirm is never auto-approved). What was shown is
+// reported back. Dialogs that appear while we're idle belong to the user and are left alone; if one
+// is still open when a command arrives we say so instead of hanging.
+const acting = new Map();      // tabId -> { accept?: boolean, text?: string } while an act/navigate runs
+const dialogLog = new Map();   // tabId -> [lines] reported in the next result
+const openDialogs = new Map(); // tabId -> { type, message } left open (appeared while idle)
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  const tabId = source.tabId;
+  if (tabId == null) return;
+  if (method === 'Page.javascriptDialogClosed') { openDialogs.delete(tabId); return; }
+  if (method !== 'Page.javascriptDialogOpening') return;
+  const pol = acting.get(tabId);
+  if (!pol) { openDialogs.set(tabId, { type: params.type, message: params.message }); return; }
+  const accept = pol.accept != null ? pol.accept : params.type === 'alert';
+  const promptText = pol.text != null ? String(pol.text) : (params.defaultPrompt || '');
+  sendCdp(tabId, 'Page.handleJavaScriptDialog', { accept, promptText }).catch(() => {});
+  const lines = dialogLog.get(tabId) || [];
+  lines.push(`${params.type} "${String(params.message || '').slice(0, 200)}" → ${accept ? 'accepted' : 'dismissed'}${params.type === 'prompt' && accept ? ` with "${promptText}"` : ''}${!accept && params.type !== 'alert' ? ' (to accept, repeat the op with dialog:"accept")' : ''}`);
+  dialogLog.set(tabId, lines);
+});
+
+// Run fn with this tab's dialogs auto-answered (see above).
+async function whileActing(tabId, fn) {
+  if (!acting.has(tabId)) acting.set(tabId, {});
+  try { return await fn(); } finally { acting.delete(tabId); }
+}
+
+function takeDialogLog(tabId) {
+  const l = dialogLog.get(tabId); dialogLog.delete(tabId);
+  return l && l.length ? l.map((x) => `  dialog: ${x}`).join('\n') + '\n' : '';
+}
+
+// Refuse to talk to a tab frozen by a dialog the user hasn't answered (it would hang). The
+// act op {op:"dialog"} answers it.
+function assertNoOpenDialog(tabId) {
+  const d = openDialogs.get(tabId);
+  if (d) throw new Error(`the page is showing ${d.type === 'alert' ? 'an' : 'a'} ${d.type} dialog "${String(d.message || '').slice(0, 120)}" and is frozen until it's answered: run browser_act with [{op:"dialog",accept:true|false}] (or answer it in the browser)`);
+}
 
 // If a driven tab is closed (by the user or by us), forget it everywhere so a session doesn't
 // keep pointing at a dead tab.
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
+  openDialogs.delete(tabId); acting.delete(tabId); dialogLog.delete(tabId); lastTable.delete(tabId);
+  worlds.delete(tabId);
+  refSeed.delete(tabId);
   const owner = tabOwner.get(tabId);
   tabOwner.delete(tabId);
   if (owner != null) {
@@ -303,35 +381,60 @@ async function endSession(session) {
  * action re-resolves the exact element it was chosen from.
  * -------------------------------------------------------------------------- */
 
-const SNAPSHOT = `(function(){
+const SNAPSHOT = `(function(seed){
   try{
   if(!document.body) return null;
-  var cache = window.__pawbrowse || (window.__pawbrowse = {ids:new WeakMap(), nodes:new Map(), next:1, byId:{}});
+  // A NEW document continues numbering from where the tab's previous document stopped (seed), so a
+  // ref held over from the last page can never silently name a different element on this one.
+  var cache = window.__pawbrowse || (window.__pawbrowse = {ids:new WeakMap(), nodes:new Map(), next:Math.max(1,seed|0), byId:{}});
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
-  function safe(e){ return ['password','file','hidden'].indexOf(e.type)<0; }
-  function visible(e){ return !e.closest('[aria-hidden="true"],[inert]') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}); }
+  function safe(e){ return ['password','hidden'].indexOf(e.type)<0; }
+  // display:contents boxes (every <slot>, many design-system wrappers) have no box of their own, so
+  // checkVisibility() says false even though their children render: judge those by their parent.
+  function shown(e){ for(var g=0; e && g<32; g++){ if(e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return true; var v=e.ownerDocument.defaultView; if(!v || v.getComputedStyle(e).display!=='contents') return false; e=e.parentElement || (e.parentNode && e.parentNode.host); } return false; }
+  function visible(e){ return !!e && !e.closest('[aria-hidden="true"],[inert]') && shown(e); }
+  function sized(e){ var r=e.getBoundingClientRect(); return r.width>0 && r.height>0; }
+  function clean(s,n){ return String(s||'').replace(/\\s+/g,' ').trim().slice(0,n||120); }
   function name(e,seen){
     seen=seen||new Set();
-    if(!e||seen.has(e)) return '';
+    if(!e||seen.has(e)||e.nodeType!==1) return '';
     seen.add(e);
-    var rt=(e.getRootNode&&e.getRootNode())||document; var gid=function(id){try{return rt.getElementById?rt.getElementById(id):document.getElementById(id);}catch(_){return null;}};
-    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).map(function(id){return name(gid(id),seen);}).filter(Boolean).join(' ');
+    var tag=e.tagName;
+    if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||tag==='TEMPLATE') return '';
+    if(tag.toLowerCase()==='svg'){ var st=e.querySelector('title'); return e.getAttribute('aria-label')||(st?st.textContent:''); }
+    var rt=(e.getRootNode&&e.getRootNode())||document; var gid=function(id){try{return (rt.getElementById&&rt.getElementById(id))||e.ownerDocument.getElementById(id);}catch(_){return null;}};
+    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(function(id){return name(gid(id),seen);}).filter(Boolean).join(' ');
     if(ref) return ref;
     if(e.getAttribute('aria-label')) return e.getAttribute('aria-label');
     var labs=[].slice.call(e.labels||[]).map(function(l){return name(l,seen);}).filter(Boolean).join(' ');
     if(labs) return labs;
     if(['button','submit','reset'].indexOf(e.type)>=0 && e.value) return e.value;
     if(e.getAttribute('alt')) return e.getAttribute('alt');
-    var txt = e.tagName==='INPUT' ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : ''); }).join(' ').trim();
+    // Visible descendants only: display:none / hidden children (tooltips, menus) must not leak in.
+    var txt = (tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA') ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && visible(n) ? name(n,seen) : ''); }).join(' ').trim();
     if(txt) return txt;
-    return e.getAttribute('title')||e.getAttribute('placeholder')||'';
+    return e.getAttribute('title')||e.getAttribute('placeholder')||e.getAttribute('aria-placeholder')||'';
+  }
+  // A form field with no programmatic label: use a nearby <label> sibling (the common unassociated
+  // "<label>Name</label><div><input></div>" markup), then placeholder-ish hints, then its name attr.
+  function fieldLabel(e){
+    var n=name(e); if(n) return n;
+    if(!e.isContentEditable && !e.matches('input,textarea,select')) return '';
+    for(var s=e.parentElement,d=0; s && d<3; s=s.parentElement,d++){
+      if(['BODY','HTML','FORM'].indexOf(s.tagName)>=0) break;
+      for(var k=0;k<s.children.length;k++){ var c=s.children[k]; if(c.tagName==='LABEL' && !c.contains(e) && !c.control){ var t=name(c); if(t) return t; } }
+    }
+    return e.getAttribute('data-placeholder')||e.getAttribute('name')||(e.isContentEditable?'Rich text editor':'');
   }
   var roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio','menuitemcheckbox','option','gridcell','combobox','textbox','searchbox','spinbutton','slider','treeitem'];
   // Semantic controls + custom clickables: any contenteditable, an inline onclick, or a
   // keyboard-focusable [tabindex] (framework buttons — React-Native-Web Pressables, design-system
   // divs — often expose only these). cursor:pointer clickables are added separately in collect().
   var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[tabindex]:not([tabindex="-1"]),'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
+  // Inputs whose value is SET (not typed): typing into these is unreliable, so type() routes them
+  // through a value setter. The hint tells the agent the expected format.
+  var SETTABLE={date:'YYYY-MM-DD',time:'HH:MM','datetime-local':'YYYY-MM-DDTHH:MM',month:'YYYY-MM',week:'YYYY-Www',color:'#rrggbb',range:''};
   function role(e){
     var explicit=e.getAttribute('role');
     if(roles.indexOf(explicit)>=0) return explicit;
@@ -341,22 +444,55 @@ const SNAPSHOT = `(function(){
     if(e.tagName==='TEXTAREA'||e.isContentEditable) return 'textbox';
     if(e.tagName==='INPUT'){
       if(['checkbox','radio'].indexOf(e.type)>=0) return e.type;
-      if(['button','submit','reset','image'].indexOf(e.type)>=0) return 'button';
+      if(['button','submit','reset','image','file'].indexOf(e.type)>=0) return 'button';
       if(e.type==='search') return 'searchbox';
       if(e.type==='number') return 'spinbutton';
-      if(['text','email','url','tel'].indexOf(e.type)>=0) return 'textbox';
+      if(e.type==='range') return 'slider';
+      if(['text','email','url','tel'].indexOf(e.type)>=0 || SETTABLE.hasOwnProperty(e.type)) return 'textbox';
     }
     return null;
   }
-  // Semantic guard: a stable fingerprint of an element's MEANING (role/name/value/state).
-  // Compared at action time so a silently-relabeled or changed target is rejected.
-  // Identity-focused: role + accessible name. Catches a target silently becoming a different
-  // control (relabel), while tolerating benign value/checked/expanded churn and same-element
-  // multi-op batches.
-  cache.guard=function(el){ if(!el) return ''; try{ return [role(el),(name(el)||'').replace(/\\s+/g,' ').trim()].join(String.fromCharCode(1)); }catch(_){ return ''; } };
-  // Collect actionable elements across the top document, OPEN shadow roots, and SAME-ORIGIN
-  // iframes. dx/dy translate each element's frame-local rect into top-level viewport coordinates
-  // (shadow roots share the frame's coords so dx/dy carry through unchanged; iframes add offset).
+  // Hit-test a frame-local point in the element's own root, descending into nested open shadow
+  // roots, so a covered control (overlay, modal backdrop, pointer-events:none) is flagged.
+  cache.hits=function(t, lx, ly){
+    try{
+      if(lx==null){ var hr=t.getBoundingClientRect(); lx=hr.x+hr.width/2; ly=hr.y+hr.height/2; }
+      var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
+      var f=root.elementFromPoint(lx,ly), g=0;
+      while(f && f.shadowRoot && g++<16){ var inner=f.shadowRoot.elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
+      return !!f && (t===f || t.contains(f) || (t.control && t.control===f));
+    }catch(_){ return true; }
+  };
+  var hits=cache.hits;
+  // The element to click for a control. Styled checkboxes/radios/file pickers usually hide the
+  // native input (opacity:0, 0x0, display:none, sr-only) and show a <label> or a card instead:
+  // the visible label is the interaction surface; an opacity-0 input stretched over a visible
+  // card is clicked directly. Returns null when the control has no usable surface.
+  cache.surface=function(e){
+    if(!e||!e.isConnected) return null;
+    var hidable=e.tagName==='INPUT' && ['checkbox','radio','file'].indexOf(e.type)>=0;
+    if(visible(e) && sized(e)){
+      // A sr-only (1px, clipped) native input is "visible" but not clickable: use its label.
+      if(!hidable || cache.hits(e)) return e;
+    }
+    if(!hidable) return null;
+    if(e.closest('[aria-hidden="true"],[inert]')) return null;
+    var labs=[].slice.call(e.labels||[]);
+    for(var i=0;i<labs.length;i++) if(visible(labs[i]) && sized(labs[i])) return labs[i];
+    if(visible(e) && sized(e)) return e; // no label to fall back to: report it as-is (covered)
+    if(sized(e) && e.checkVisibility({checkOpacity:false,checkVisibilityCSS:true}) && visible(e.parentElement)){
+      try{ if(e.ownerDocument.defaultView.getComputedStyle(e).pointerEvents!=='none') return e; }catch(_){}
+    }
+    return null;
+  };
+  // Identity-focused semantic guard: role + accessible name. Catches a target silently becoming a
+  // different control (relabel), while tolerating value/checked/expanded churn.
+  cache.guard=function(el){ if(!el) return ''; try{ return [role(el),clean(fieldLabel(el),200)].join(String.fromCharCode(1)); }catch(_){ return ''; } };
+  // Walk the top document, OPEN shadow roots, and SAME-ORIGIN iframes. dx/dy translate each
+  // element's frame-local rect into top-level viewport coordinates (shadow roots share their
+  // frame's coords; iframes add their content-box offset). Cross-origin frames can't be read from
+  // here; they're reported so the agent knows content exists that it can't see.
+  var frames=[];
   function collect(){
     var out=[], seen=new Set(), scanned=0;
     function add(el, dx, dy, clk){ if(seen.has(el)) return; seen.add(el); out.push({el:el, dx:dx, dy:dy, clk:clk}); }
@@ -382,98 +518,174 @@ const SNAPSHOT = `(function(){
           }catch(_){}
         }
         if(n.shadowRoot) walk(n.shadowRoot, dx, dy, depth+1);
-        if(n.tagName==='IFRAME'){ try{
-          var idoc=n.contentDocument;
+        if(n.tagName==='IFRAME' || n.tagName==='FRAME'){
+          var idoc=null; try{ idoc=n.contentDocument; }catch(_){}
           if(idoc && idoc.body){
-            var ir=n.getBoundingClientRect(), cs=(n.ownerDocument.defaultView||window).getComputedStyle(n);
-            walk(idoc,
-              dx+ir.left+(parseFloat(cs.borderLeftWidth)||0)+(parseFloat(cs.paddingLeft)||0),
-              dy+ir.top+(parseFloat(cs.borderTopWidth)||0)+(parseFloat(cs.paddingTop)||0), depth+1);
+            var ir=n.getBoundingClientRect();
+            walk(idoc, dx+ir.left+n.clientLeft+(parseFloat(n.ownerDocument.defaultView.getComputedStyle(n).paddingLeft)||0),
+              dy+ir.top+n.clientTop+(parseFloat(n.ownerDocument.defaultView.getComputedStyle(n).paddingTop)||0), depth+1);
+          } else if(visible(n) && sized(n)){
+            var src=''; try{ src=new URL(n.src, location.href).host; }catch(_){ src=n.getAttribute('src')||''; }
+            frames.push(clean(n.getAttribute('title')||n.getAttribute('aria-label')||n.name||src||'frame',60));
           }
-        }catch(_){} }
+        }
       }
     }
     walk(document, 0, 0, 0);
     return out;
   }
-  var actions=[], nodes=collect();
+  var scrollerCache=new Map(); // element -> does it clip its overflow? (one style read per ancestor per snapshot)
+  function clipper(a, view){ var v=scrollerCache.get(a); if(v===undefined){ var cs=view.getComputedStyle(a); v=!(cs.overflowX==='visible' && cs.overflowY==='visible'); scrollerCache.set(a,v); } return v; }
+  function clipped(t){
+    try{
+      var r=t.getBoundingClientRect(), cx=r.x+r.width/2, cy=r.y+r.height/2, view=t.ownerDocument.defaultView;
+      for(var a=t.parentElement, g=0; a && g<40; a=a.parentElement, g++){
+        if(!clipper(a, view)) continue;
+        var ar=a.getBoundingClientRect();
+        // How far outside the box it is (0 = inside), so the nearest hidden rows are kept first.
+        if(cx<ar.left||cx>ar.right||cy<ar.top||cy>ar.bottom) return 1+Math.max(ar.left-cx,cx-ar.right,ar.top-cy,cy-ar.bottom,0);
+      }
+    }catch(_){}
+    return 0;
+  }
+  var inView=[], offView=[], farOff=0, nodes=collect(), VH=innerHeight, VW=innerWidth;
   for(var i=0;i<nodes.length;i++){
     var e=nodes[i].el, ox=nodes[i].dx, oy=nodes[i].dy, clk=nodes[i].clk;
     try{
-    if(!safe(e)||!visible(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"]')) continue;
-    var r=e.getBoundingClientRect(), x=r.x+r.width/2+ox, y=r.y+r.height/2+oy, rname=role(e);
+    if(!safe(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) continue;
+    // Cheap early exit for controls screens away (huge pages have thousands): count, don't process.
+    var r0=e.getBoundingClientRect();
+    if(r0.width>0 && r0.height>0){ var y0=r0.y+r0.height/2+oy; if(y0<-VH||y0>=2*VH){ if(visible(e)) farOff++; continue; } }
+    var surf=cache.surface(e); if(!surf) continue;
+    var rname=role(e);
     if(!rname){
       // Role-less custom clickable (cursor:pointer, inline onclick, or focusable [tabindex]).
-      // Only accept it if it has a real label and isn't just a wrapper around an actual control,
-      // so we don't flood the table with layout containers.
+      // Only accept it if it has a real label and isn't just a wrapper around an actual control
+      // (or a <label> standing in for one), so we don't flood the table with layout containers.
       var ti=e.getAttribute('tabindex');
       if(clk || e.hasAttribute('onclick') || (ti!==null && ti!=='-1')){
+        if(e.tagName==='LABEL' && e.control) continue;
         if(!(name(e)||'').trim() || e.querySelector(selector)) continue;
         rname='button';
       }
     }
-    if(!rname||r.width<=0||r.height<=0||x<0||y<0||x>=innerWidth||y>=innerHeight) continue;
+    if(!rname) continue;
+    var r=surf.getBoundingClientRect(), lx=r.x+r.width/2, ly=r.y+r.height/2, x=lx+ox, y=ly+oy;
+    if(x<0||x>=VW) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    var base={node:identity(e), role:rname, label:(name(e)||rname).replace(/\\s+/g,' ').trim().slice(0,120), x:Math.round(x), y:Math.round(y)};
+    var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||rname), x:Math.round(x), y:Math.round(y)};
     var achecked=e.getAttribute('aria-checked');
     if(['checkbox','radio'].indexOf(e.type)>=0) base.checked=!!e.checked;
     else if(achecked!=null) base.checked=(achecked==='true');
     var aexp=e.getAttribute('aria-expanded'); if(aexp!=null) base.expanded=(aexp==='true');
     var asel=e.getAttribute('aria-selected'); if(asel!=null) base.selected=(asel==='true');
+    if(e.required || e.getAttribute('aria-required')==='true') base.required=true;
+    // Only surface validation errors on fields the user (or agent) has put a value in, or that the
+    // page itself flags, so an untouched required form isn't a wall of warnings.
+    if(e.getAttribute('aria-invalid')==='true') base.invalid='invalid';
+    else if(e.validity && !e.validity.valid && e.value) base.invalid=clean(e.validationMessage,80)||'invalid';
+    var clip=clipped(surf);
+    if(clip){
+      base.off='scroll'; base.dist=clip; // inside an overflow box, scrolled out of it: acting scrolls it into view
+    } else if(y<0||y>=VH){
+      // Off-screen (scrolled away): keep the nearest ones so the agent knows they exist; acting on
+      // them scrolls them into view first.
+      if(y<-VH/2||y>=1.5*VH){ farOff++; continue; }
+      base.off=y<0?'up':'down'; base.dist=y<0?-y:y-VH;
+    } else if((function(){ var fv=surf.ownerDocument.defaultView; return fv!==window && (lx<0||ly<0||lx>=fv.innerWidth||ly>=fv.innerHeight); })()){
+      base.off='scroll'; // scrolled out of its (same-origin) iframe's viewport
+    } else if(!hits(surf, lx, ly)){
+      // Not hittable: either scrolled out of an overflow container (reachable — acting scrolls it
+      // in) or genuinely covered by an overlay/modal (needs dismissing first).
+      base.covered=true;
+    }
+    var list=base.off?offView:inView;
     if(e.tagName==='SELECT'){
       base.kind='select';
       base.value=[].map.call(e.selectedOptions,function(o){return o.label;}).join(', ');
       base.options=[].filter.call(e.options,function(o){return !o.disabled && !(o.closest&&o.closest('optgroup[disabled]'));}).map(function(o){return o.label;}).slice(0,40);
-      actions.push(base);
+      list.push(base);
+    } else if(e.tagName==='INPUT' && e.type==='file'){
+      base.kind='upload';
+      if(e.files && e.files.length) base.value=[].map.call(e.files,function(f){return f.name;}).join(', ');
+      if(e.accept) base.fmt=e.accept;
+      list.push(base);
     } else {
-      var editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' && (['textbox','searchbox','spinbutton'].indexOf(rname)>=0 || (rname==='combobox' && ['INPUT','TEXTAREA'].indexOf(e.tagName)>=0));
-      var value = (['checkbox','radio'].indexOf(e.type)>=0) ? '' : (('value' in e) ? String(e.value) : ((e.isContentEditable||rname==='combobox') ? e.innerText.trim() : ''));
+      var settable=e.tagName==='INPUT' && SETTABLE.hasOwnProperty(e.type);
+      var editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' && (['textbox','searchbox','spinbutton'].indexOf(rname)>=0 || (rname==='slider' && e.tagName==='INPUT') || (rname==='combobox' && ['INPUT','TEXTAREA'].indexOf(e.tagName)>=0));
+      var value = (['checkbox','radio'].indexOf(e.type)>=0) ? '' : (('value' in e && e.tagName!=='BUTTON' && e.tagName!=='LI') ? String(e.value) : ((e.isContentEditable||rname==='combobox') ? e.innerText.trim() : ''));
+      if(e.tagName==='INPUT' && ['button','submit','reset','image'].indexOf(e.type)>=0) value=''; // its value IS its label
       if(value) base.value=value.slice(0,80);
+      if(settable){ base.fmt=e.type==='range' ? (e.min||'0')+'..'+(e.max||'100')+(e.step&&e.step!=='any'?' step '+e.step:'') : SETTABLE[e.type]; }
       base.kind=editable?'fill':'click';
-      actions.push(base);
+      list.push(base);
       // For an editable combobox, also offer a plain click to open its popup (not just type).
-      if(editable && rname==='combobox'){ actions.push({node:base.node, role:rname, label:'Open '+base.label, x:base.x, y:base.y, kind:'click', expanded:base.expanded}); }
+      if(editable && rname==='combobox'){ list.push({node:base.node, role:rname, label:'Open '+base.label, x:base.x, y:base.y, kind:'click', expanded:base.expanded, off:base.off, covered:base.covered}); }
     }
     }catch(_){ continue; }
   }
-  // Page text is a best-effort extra — a failure here must NOT discard the element table
-  // we already computed above.
-  var text='';
+  var omitted=Math.max(0, inView.length-250); inView.splice(250);
+  // Keep the 25 off-screen controls NEAREST the visible area (not the first 25 in DOM order, which
+  // for a scrolled list are the rows furthest behind), then restore page order.
+  var offMore=Math.max(0, offView.length-25)+farOff;
+  if(offView.length>25){ offView.forEach(function(a,k){ a.ord=k; }); offView.sort(function(a,b){ return a.dist-b.dist; }); offView.splice(25); offView.sort(function(a,b){ return a.ord-b.ord; }); }
+  var actions=inView.concat(offView);
+  // Identical labels ("Delete" per row, "Edit" per user) are ambiguous to the agent: tag each with
+  // the nearest ancestor text that tells them apart (e.g. the list row it lives in).
   try{
-    var words=[], walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT), range=document.createRange(), node, length=0;
-    while((node=walker.nextNode()) && length<4000){
-      var v=node.textContent.trim(), p=node.parentElement;
-      if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
-      range.selectNodeContents(node); var tr=range.getBoundingClientRect();
-      if(tr.width>0&&tr.height>0&&tr.bottom>0&&tr.top<innerHeight&&tr.right>0&&tr.left<innerWidth){ words.push(v); length+=v.length; }
-    }
-    text=words.join('\\n').slice(0,4000);
-  }catch(_){ text=''; }
-  var omitted=Math.max(0, actions.length-250); actions.splice(250);
+    var byLabel={};
+    for(var u=0;u<actions.length;u++){ var key=actions[u].kind+'|'+actions[u].label; (byLabel[key]=byLabel[key]||[]).push(actions[u]); }
+    Object.keys(byLabel).forEach(function(key){
+      var grp=byLabel[key]; if(grp.length<2) return;
+      grp.forEach(function(a){
+        var el=cache.nodes.get(a.node), lab=a.label;
+        for(var p=el&&el.parentElement, g=0; p && g<6 && p.tagName!=='BODY'; p=p.parentElement, g++){
+          var tx=clean(p.innerText,400); if(!tx || tx===lab) continue;
+          var rest=clean(tx.split(lab).join(' '),40); if(rest){ a.ctx=rest; break; }
+        }
+      });
+    });
+  }catch(_){}
+  var focus=null;
+  try{ var fe=document.activeElement; while(fe && fe.shadowRoot && fe.shadowRoot.activeElement) fe=fe.shadowRoot.activeElement;
+    for(var q=0; fe && fe.tagName==='IFRAME' && q<8; q++){ var fd=null; try{ fd=fe.contentDocument; }catch(_){} fe=fd?fd.activeElement:null; }
+    if(fe && fe.tagName!=='BODY' && fe.tagName!=='HTML' && cache.ids.has(fe)) focus=cache.ids.get(fe);
+  }catch(_){}
   // Displayed id derives from the STABLE node id (not position), so a reused number can never
   // remap to a different element across observations; duplicates (e.g. combobox Open) get a suffix.
   // Guarded so a getter/DOM quirk while building ids can't blank the whole table.
+  var focusId=null;
   try{
     cache.byId={}; cache.guards={}; var used={};
-    for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); }
+    for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); if(focus!=null && actions[j].node===focus && !focusId) focusId=id; }
   }catch(_){}
-  return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), text:text, omitted:omitted, actions:actions};
-  }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, text:'', omitted:0, actions:[]}; }
-})()`;
+  return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, actions:actions};
+  }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, omitted:0, actions:[]}; }
+})`;
 
 function formatTable(snap) {
   if (!snap) return '(page not ready)';
   const lines = [];
   lines.push(`${snap.title || '(untitled)'}  —  ${snap.url}`);
-  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.actions.length} controls${snap.omitted ? ` (+${snap.omitted} more; scroll to reveal)` : ''}`);
+  const more = (snap.omitted || 0) + (snap.offMore || 0);
+  lines.push(`scroll ${snap.scrollY}/${snap.scrollH}  ·  ${snap.actions.length} controls${more ? ` (+${more} more; scroll to reveal)` : ''}${snap.focus ? `  ·  focus ${snap.focus}` : ''}`);
+  if (snap.frames && snap.frames.length) lines.push(`cross-origin frames (content not readable): ${snap.frames.map((f) => `"${f}"`).join(', ')}`);
   for (const a of snap.actions) {
     let flag = ' ';
     if (typeof a.expanded === 'boolean') flag = a.expanded ? '▾' : '▸'; // open / closed
     else if (typeof a.checked === 'boolean') flag = a.checked ? '✓' : '·';
     else if (a.selected === true) flag = '◉';
     let line = `${a.id.padEnd(4)} ${a.kind.padEnd(6)}${flag} "${a.label}"`;
+    if (a.ctx) line += ` in "${a.ctx}"`;
+    if (a.required) line += ' (required)';
     if (a.value) line += `  ▸ "${a.value}"`;
+    if (a.fmt) line += `  fmt{${a.fmt}}`;
     if (a.kind === 'select' && a.options && a.options.length) line += `  opts{${a.options.join(' | ')}}`;
+    if (a.invalid) line += `  ⚠ "${a.invalid}"`;
+    if (a.off === 'up') line += '  ↑ above view';
+    else if (a.off === 'down') line += '  ↓ below view';
+    else if (a.off === 'scroll') line += '  ↕ scrolled out of its box';
+    if (a.covered) line += '  ⊘ covered';
     lines.push(line);
   }
   return lines.join('\n');
@@ -486,12 +698,52 @@ const SIG = `JSON.stringify([location.href, document.title, [].map.call(document
 
 // Retry through transient "document is navigating" states so a snapshot taken
 // during a transition settles instead of failing.
+// Readable page text. innerText stops at shadow roots and iframes, so it misses web-component
+// content and same-origin frames. Mark every composed ancestor of a shadow host / iframe; unmarked
+// subtrees use the (fast, layout-aware) innerText, marked ones are walked through their composed
+// children (shadow root, slots' assigned nodes, iframe document).
+const READ_TEXT = `(function(max){
+  var main=document.querySelector('main')||document.body; if(!main) return {title:document.title,url:location.href,text:''};
+  var mark=new Set();
+  function scan(root,d){ if(d>12) return; var all; try{ all=root.querySelectorAll('*'); }catch(_){ return; }
+    for(var i=0;i<all.length;i++){ var n=all[i], special=false;
+      if(n.shadowRoot){ special=true; scan(n.shadowRoot,d+1); }
+      if(n.tagName==='SLOT') special=true;
+      if(n.tagName==='IFRAME'||n.tagName==='FRAME'){ var doc=null; try{ doc=n.contentDocument; }catch(_){} if(doc&&doc.body){ special=true; scan(doc,d+1); } }
+      if(special){ for(var p=n; p && !mark.has(p); ){ mark.add(p); p=p.parentNode; if(p && p.nodeType===11) p=p.host; } }
+    } }
+  scan(document,0);
+  var out=[], len=0;
+  function vis(e){ try{ if(e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return true; return getComputedStyle(e).display==='contents'; }catch(_){ return true; } }
+  function put(t){ if(t && len<max){ out.push(t); len+=t.length; } }
+  function kids(n){
+    if(n.shadowRoot) return n.shadowRoot.childNodes;
+    if(n.tagName==='SLOT'){ var a=n.assignedNodes({flatten:true}); return a.length?a:n.childNodes; }
+    return n.childNodes;
+  }
+  function walk(n,d){
+    if(len>=max||d>60) return;
+    if(n.nodeType===3){ var v=n.textContent.replace(/\\s+/g,' ').trim(); if(v && n.parentElement && vis(n.parentElement)) put(v); return; }
+    if(n.nodeType!==1 && n.nodeType!==11) return;
+    if(n.nodeType===1){
+      if(/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(n.tagName) || !vis(n)) return;
+      if(n.tagName==='IFRAME'||n.tagName==='FRAME'){ var doc=null; try{ doc=n.contentDocument; }catch(_){} if(doc&&doc.body){ put('\\n'); walk(doc.body,d+1); put('\\n'); } return; }
+      if(!mark.has(n)){ put(n.innerText); if(getComputedStyle(n).display!=='inline') put('\\n'); return; }
+    }
+    var k=kids(n); for(var i=0;i<k.length;i++) walk(k[i],d+1);
+    if(n.nodeType===1 && getComputedStyle(n).display!=='inline') put('\\n');
+  }
+  walk(main,0);
+  var text=out.join(' ').replace(/[ \\t]*\\n[ \\t]*/g,'\\n').replace(/\\n{3,}/g,'\\n\\n').trim().slice(0,max);
+  return {title:document.title,url:location.href,text:text};
+})`;
+
 async function snapshot(tabId) {
   let last;
   for (let i = 0; i < 8; i++) {
     try {
-      const snap = await evaluate(tabId, SNAPSHOT);
-      if (snap) return snap;
+      const snap = await evaluate(tabId, `${SNAPSHOT}(${refSeed.get(tabId) || 1})`);
+      if (snap) { if (snap.next > (refSeed.get(tabId) || 1)) { refSeed.set(tabId, snap.next); persistState(); } return snap; }
     } catch (e) { last = e; }
     await sleep(120);
   }
@@ -499,8 +751,18 @@ async function snapshot(tabId) {
   return null;
 }
 
+// The last table each tab reported, so act() can tell the agent whether ANYTHING it can see changed
+// (scrolling a panel, opening a popover...) rather than only form values / URL / control count.
+const lastTable = new Map(); // tabId -> table text (without the header lines that hold ref numbers)
+
+// Ref numbers and the focus marker are dropped: clicking a button that does nothing still focuses
+// it, and that alone must not count as "the page changed".
+function tableBody(t) { return String(t).split('\n').map((l) => l.replace(/^e\d+(_\d+)?\s+/, '').replace(/ {2}· {2}focus e\S+$/, '')).join('\n'); }
+
 async function observe(tabId) {
-  return formatTable(await snapshot(tabId));
+  const t = formatTable(await snapshot(tabId));
+  lastTable.set(tabId, tableBody(t));
+  return t;
 }
 
 /* -------------------------------- Actions --------------------------------- */
@@ -520,27 +782,75 @@ async function resolveHit(tabId, ref, opts) {
     if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
     if(${forFill} && (e.readOnly||e.getAttribute('aria-readonly')==='true')) return {error:'field is read-only'};
     if(${forFill} && !('value' in e) && !e.isContentEditable) return {error:'not an editable field (observe again)'};
-    if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return {error:'element not visible'};
-    e.scrollIntoView({block:'center',inline:'center'});
-    var r=e.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
+    // Value-set inputs (date/time/range/color...) take the setter path, not click+type.
+    if(${forFill} && e.tagName==='INPUT' && ['date','time','datetime-local','month','week','color','range'].indexOf(e.type)>=0) return {set:true};
+    // Click the control's visible SURFACE: a styled checkbox's <label>, or the element itself.
+    var s=c.surface?c.surface(e):e;
+    if(!s) return {error:'element not visible'};
+    s.scrollIntoView({block:'center',inline:'center'});
+    var r=s.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
     // Frame-local center (in the element's own frame viewport)...
     var lx=r.x+r.width/2, ly=r.y+r.height/2;
     // ...plus the offset chain of any ancestor iframes, giving the TOP-LEVEL click point for CDP.
-    var dx=0, dy=0, w=(e.ownerDocument&&e.ownerDocument.defaultView), g=0;
+    var dx=0, dy=0, w=(s.ownerDocument&&s.ownerDocument.defaultView), g=0;
     while(w && w.frameElement && g++<12){
       var fe=w.frameElement, fr=fe.getBoundingClientRect(), fcs=fe.ownerDocument.defaultView.getComputedStyle(fe);
-      dx+=fr.left+(parseFloat(fcs.borderLeftWidth)||0)+(parseFloat(fcs.paddingLeft)||0);
-      dy+=fr.top+(parseFloat(fcs.borderTopWidth)||0)+(parseFloat(fcs.paddingTop)||0);
+      dx+=fr.left+fe.clientLeft+(parseFloat(fcs.paddingLeft)||0);
+      dy+=fr.top+fe.clientTop+(parseFloat(fcs.paddingTop)||0);
       w=fe.ownerDocument.defaultView;
     }
     var x=Math.round(lx+dx), y=Math.round(ly+dy);
     if(x<0||y<0||x>=innerWidth||y>=innerHeight) return {error:'element off-screen after scroll'};
-    // Hit-test in the element's OWN root (document / shadow root / iframe doc) using frame-local
-    // coords, so shadow-DOM and iframe elements aren't falsely reported as covered.
-    var root=e.getRootNode(); var efp=(root&&root.elementFromPoint)?root.elementFromPoint(lx,ly):document.elementFromPoint(lx,ly);
-    if(!e.contains(efp)) return {error:'element is covered by another element'};
+    // Hit-test in the surface's OWN root (document / shadow root / iframe doc) with frame-local
+    // coords, descending through nested open shadow roots, so shadow-DOM and iframe elements
+    // aren't falsely reported as covered.
+    var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
+    var f=root.elementFromPoint(lx,ly), k=0;
+    while(f && f.shadowRoot && k++<16){ var inner=f.shadowRoot.elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
+    if(!f || !(s===f || s.contains(f) || (s.control && s.control===f))) return {error:'element is covered by another element (dismiss the overlay/dialog first)'};
     return {x:x, y:y};
   })()`);
+}
+
+// Set the value of a date/time/month/week/color/range input the way a user's picker would: via the
+// native value setter (so framework value-trackers see a real change), then input + change events.
+// The browser sanitizes invalid values to '' (or clamps ranges), so we read back and report that.
+async function setValue(tabId, ref, text) {
+  const R = JSON.stringify(String(ref));
+  const V = JSON.stringify(String(text ?? ''));
+  return evaluate(tabId, `(function(){
+    var c=window.__pawbrowse; var e=c&&c.byId&&c.nodes.get(c.byId[${R}]);
+    if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
+    var val=${V};
+    var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+    try{ e.focus({preventScroll:true}); }catch(_){}
+    setter.call(e,val);
+    e.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+    e.dispatchEvent(new Event('change',{bubbles:true}));
+    if(val!=='' && e.value==='') return {error:'value "'+val+'" rejected by the '+e.type+' field (use the fmt{} format shown)'};
+    return {value:e.value};
+  })()`);
+}
+
+// Attach local files to an <input type=file> (DOM.setFileInputFiles). Chrome only allows this for
+// an extension that the user has granted "Allow access to file URLs" in chrome://extensions.
+async function uploadFiles(tabId, ref, paths) {
+  const R = JSON.stringify(String(ref));
+  const h = await evaluate(tabId, `(function(){
+    var c=window.__pawbrowse; var e=c&&c.byId&&c.nodes.get(c.byId[${R}]);
+    return (e&&e.isConnected&&e.tagName==='INPUT'&&e.type==='file'&&!e.disabled)?e:null;
+  })()`, { handle: true });
+  if (!h || !h.objectId) return { error: 'not a file-upload field (observe again)' };
+  try {
+    await sendCdp(tabId, 'DOM.setFileInputFiles', { files: paths, objectId: h.objectId });
+  } catch (e) {
+    return { error: /not allowed/i.test(e.message)
+      ? 'Chrome blocked the upload: enable "Allow access to file URLs" for PawBrowse in chrome://extensions'
+      : e.message };
+  } finally {
+    sendCdp(tabId, 'Runtime.releaseObject', { objectId: h.objectId }).catch(() => {});
+  }
+  return { ok: true };
 }
 
 // Click the most specific visible element matching text, for custom widgets/menus
@@ -627,7 +937,16 @@ const KEYMAP = {
 };
 
 async function runOp(tabId, op) {
+  const pol = acting.get(tabId);
+  if (pol) { pol.accept = op.dialog === 'accept' ? true : op.dialog === 'dismiss' ? false : undefined; pol.text = op.dialog_text; }
   switch (op.op) {
+    case 'dialog': {
+      const d = openDialogs.get(tabId);
+      if (!d) return 'dialog: no dialog is open';
+      await sendCdp(tabId, 'Page.handleJavaScriptDialog', { accept: !!op.accept, promptText: op.text != null ? String(op.text) : '' });
+      openDialogs.delete(tabId);
+      return `dialog: ${d.type} "${String(d.message || '').slice(0, 120)}" → ${op.accept ? 'accepted' : 'dismissed'}`;
+    }
     case 'click': {
       const r = await resolveHit(tabId, op.ref);
       if (r.error) return `${op.ref}: ${r.error}`;
@@ -643,6 +962,10 @@ async function runOp(tabId, op) {
     case 'type': {
       const r = await resolveHit(tabId, op.ref, { fill: true });
       if (r.error) return `${op.ref}: ${r.error}`;
+      if (r.set) {
+        const sv = await setValue(tabId, op.ref, op.text);
+        return sv.error ? `${op.ref}: ${sv.error}` : `type ${op.ref} (set to "${sv.value}")`;
+      }
       await clickAt(tabId, r.x, r.y); // focus the field with a trusted click
       // Select-all then insert — robust for React/controlled inputs.
       await sendCdp(tabId, 'Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', modifiers: IS_MAC ? 4 : 2, commands: ['selectAll'] });
@@ -681,6 +1004,12 @@ async function runOp(tabId, op) {
         return `select ${op.ref}: may have applied and navigated the page; observe again before retrying`;
       }
     }
+    case 'upload': {
+      const paths = [].concat(op.paths ?? op.path ?? []).map(String).filter(Boolean);
+      if (!paths.length) return `${op.ref}: upload needs paths:["/absolute/file"]`;
+      const u = await uploadFiles(tabId, op.ref, paths);
+      return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
+    }
     case 'key': {
       const k = KEYMAP[op.key];
       if (!k) return `key "${op.key}" not supported`;
@@ -690,9 +1019,21 @@ async function runOp(tabId, op) {
     }
     case 'scroll': {
       const dy = Number(op.dy ?? 600);
-      // Real wheel event so overflow containers, virtualized lists, and infinite scroll fire.
+      // Real wheel event so overflow containers, virtualized lists, and infinite scroll fire. With a
+      // ref, the wheel goes to THAT element (a side panel, a dropdown list, a chat pane) instead of
+      // the middle of the page, so the right box scrolls.
       let cx = 400, cy = 400;
-      try { const c = await evaluate(tabId, '[Math.round(innerWidth/2),Math.round(innerHeight/2)]'); if (Array.isArray(c)) { cx = c[0]; cy = c[1]; } } catch {}
+      try {
+        const R = JSON.stringify(String(op.ref || ''));
+        const c = await evaluate(tabId, `(function(){
+          var c=window.__pawbrowse, e=${R}&&c&&c.byId&&c.nodes.get(c.byId[${R}]);
+          if(e&&e.isConnected){ var s=c.surface?c.surface(e):e; if(s){ var r=s.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, w=s.ownerDocument.defaultView;
+            while(w&&w.frameElement){ var fr=w.frameElement.getBoundingClientRect(); x+=fr.left+w.frameElement.clientLeft; y+=fr.top+w.frameElement.clientTop; w=w.frameElement.ownerDocument.defaultView; }
+            if(x>=0&&y>=0&&x<innerWidth&&y<innerHeight) return [Math.round(x),Math.round(y)]; } }
+          return [Math.round(innerWidth/2),Math.round(innerHeight/2)];
+        })()`);
+        if (Array.isArray(c)) { cx = c[0]; cy = c[1]; }
+      } catch {}
       await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: dy });
       return `scroll ${dy}`;
     }
@@ -738,7 +1079,9 @@ async function handleCommand(cmd, args, token, session) {
       if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url; // bare domain -> https
       if (!/^https?:\/\//i.test(url)) throw new Error(`navigate only supports http(s) URLs (refusing "${url.split(':')[0]}:")`);
       await attach(tabId);
+      return whileActing(tabId, async () => {
       await sendCdp(tabId, 'Page.navigate', { url });
+      worlds.delete(tabId); // the old document's world is going away with it
       await sleep(350); // let the new document commit before polling, so we don't read the old page
       for (let i = 0; i < 75; i++) {
         if (aborted()) break;
@@ -747,49 +1090,62 @@ async function handleCommand(cmd, args, token, session) {
         await sleep(200);
       }
       await settle(tabId, 400);
-      return observe(tabId);
+      const dl = takeDialogLog(tabId);
+      return (dl ? dl + '\n' : '') + await observe(tabId);
+      });
     }
     case 'observe': {
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
+      assertNoOpenDialog(tabId);
       return observe(tabId);
     }
     case 'read': {
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
+      assertNoOpenDialog(tabId);
       const max = Math.min(Number(args.max_chars) || 12000, 50000);
-      const text = await evaluate(tabId, `(function(){var el=document.querySelector('main')||document.body;var t=(el.innerText||'').replace(/\\n{3,}/g,'\\n\\n');return t.slice(0, ${max});})()`);
-      return `${await evaluate(tabId, 'document.title')}  —  ${await evaluate(tabId, 'location.href')}\n\n${text}`;
+      const r = await evaluate(tabId, `${READ_TEXT}(${max})`);
+      return `${r.title}  —  ${r.url}\n\n${r.text}`;
     }
     case 'act': {
       const ops = args.ops || [];
       if (ops.length > 50) throw new Error('too many ops in one call (max 50); split into smaller batches');
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
-      const before = await evaluate(tabId, SIG).catch(() => null);
-      const logLines = [];
-      for (const op of ops) {
-        if (aborted()) { logLines.push('  (aborted: command timed out; remaining ops not run)'); break; }
-        try { logLines.push('  ' + await runOp(tabId, op)); }
-        catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
-        await settle(tabId, 250);
-      }
-      await settle(tabId, 450);
-      const after = await evaluate(tabId, SIG).catch(() => null);
-      const changed = before == null || after == null || before !== after;
-      const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
-      // The ops already executed; a failed post-action read (page navigating) must NOT make
-      // the caller think they failed and retry them.
-      let table;
-      try { table = await observe(tabId); }
-      catch {
-        return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n\n(ops executed; the page is navigating and could not be read yet — call browser_observe next. Do NOT re-run these ops.)`;
-      }
-      return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n\n${table}`;
+      return whileActing(tabId, async () => {
+        const logLines = [];
+        // Answer a dialog left open from before FIRST: until then the page can't run anything.
+        let i = 0;
+        for (; i < ops.length && ops[i].op === 'dialog'; i++) logLines.push('  ' + await runOp(tabId, ops[i]));
+        assertNoOpenDialog(tabId);
+        const before = await evaluate(tabId, SIG).catch(() => null);
+        for (; i < ops.length; i++) {
+          const op = ops[i];
+          if (aborted()) { logLines.push('  (aborted: command timed out; remaining ops not run)'); break; }
+          try { logLines.push('  ' + await runOp(tabId, op)); }
+          catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
+          await settle(tabId, 250);
+        }
+        await settle(tabId, 450);
+        const after = await evaluate(tabId, SIG).catch(() => null);
+        const seen = lastTable.get(tabId);
+        // The ops already executed; a failed post-action read (page navigating) must NOT make
+        // the caller think they failed and retry them.
+        let table;
+        try { table = await observe(tabId); } catch { table = null; }
+        const changed = before == null || after == null || before !== after || table == null || seen == null || tableBody(table) !== seen;
+        const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
+        if (table == null) {
+          return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n(ops executed; the page is navigating and could not be read yet — call browser_observe next. Do NOT re-run these ops.)`;
+        }
+        return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n${table}`;
+      });
     }
     case 'assert': {
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
+      assertNoOpenDialog(tabId);
       if (args.contains != null) {
         const ok = await evaluate(tabId, `!!(document.body && document.body.innerText && document.body.innerText.indexOf(${JSON.stringify(args.contains)})>=0)`);
         return { pass: !!ok, kind: 'contains', value: args.contains };

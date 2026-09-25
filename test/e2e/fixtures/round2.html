@@ -1,0 +1,30 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Round2</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; require-trusted-types-for 'script'">
+<style>
+ body{font:14px sans-serif;margin:10px}
+ #zoomed{zoom:1.5;display:inline-block}
+ #scaled{transform:scale(.6) rotate(8deg);transform-origin:0 0;display:inline-block;margin:10px}
+ #mover{position:relative;animation:slide 1.2s linear infinite alternate}
+ @keyframes slide{from{left:0}to{left:300px}}
+ #panel{position:fixed;left:10px;bottom:10px;width:260px;height:150px;overflow:auto;border:1px solid}
+ #fade{opacity:0;transition:opacity .4s}
+</style></head><body>
+<div id="zoomed"><button onclick="o('zoomed')">Zoomed button</button></div>
+<div id="scaled"><button onclick="o('scaled')">Scaled button</button></div>
+<div><button id="mover" onclick="o('mover')">Moving button</button></div>
+<ul>
+ <li>Invoice #1001 — Acme <button onclick="o('del 1001')">Delete</button></li>
+ <li>Invoice #1002 — Globex <button onclick="o('del 1002')">Delete</button></li>
+ <li>Invoice #1003 — Initech <button onclick="o('del 1003')">Delete</button></li>
+</ul>
+<table><tr><td>Alice</td><td><button onclick="o('edit alice')">Edit</button></td></tr><tr><td>Bob</td><td><button onclick="o('edit bob')">Edit</button></td></tr></table>
+<button id="fade" onclick="o('faded in')">Fading button</button>
+<div id="panel"><div id="rows"></div></div>
+<p id="out"></p>
+<script>
+ function o(s){document.getElementById('out').textContent=s}
+ let h=''; for(let i=0;i<60;i++) h+='<div style="height:30px">Row '+i+' <button onclick="o(\'row '+i+'\')">Open row '+i+'</button></div>';
+ const pol = trustedTypes.createPolicy('fx',{createHTML:s=>s});
+ document.getElementById('rows').innerHTML = pol.createHTML(h);
+ setTimeout(()=>{document.getElementById('fade').style.opacity=1},50);
+</script></body></html>

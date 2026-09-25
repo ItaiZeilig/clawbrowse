@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>SPA</title></head><body>
+<div id="app"></div>
+<script>
+ // Re-renders (replaces every node) on each input, like a naive framework.
+ let q='';
+ function render(){
+  const cities=['Paris','Parma','Prague','Lisbon','London'].filter(c=>q&&c.toLowerCase().startsWith(q.toLowerCase()));
+  document.getElementById('app').innerHTML='<label>City <input id="city" role="combobox" aria-expanded="'+(cities.length>0)+'" aria-controls="lb" value="'+q+'"></label>'+
+   '<ul id="lb" role="listbox">'+cities.map(c=>'<li role="option" onclick="pick(\''+c+'\')">'+c+'</li>').join('')+'</ul><p id="out"></p>';
+  const i=document.getElementById('city'); i.oninput=e=>{q=e.target.value;setTimeout(()=>{render();const n=document.getElementById('city');n.focus();n.setSelectionRange(q.length,q.length);},80);};
+ }
+ function pick(c){q=c;render();document.getElementById('out').textContent='picked '+c;}
+ render();
+</script></body></html>
