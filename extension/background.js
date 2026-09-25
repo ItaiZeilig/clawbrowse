@@ -1728,7 +1728,21 @@ async function runOp(tabId, op) {
         })()`);
         if (Array.isArray(c)) ({ x: cx, y: cy } = await top(c[0], c[1]));
       } catch {}
+      // Scroll offsets of the page and every scroll container under the point, as one signature.
+      const probe = rt.frame ? null : `(function(){ var s=[scrollX,scrollY], e=document.elementFromPoint(${cx},${cy}); for(var g=0;e&&g<60;g++){ if(e.scrollHeight>e.clientHeight||e.scrollWidth>e.clientWidth) s.push(e.scrollTop,e.scrollLeft); e=e.parentElement||(e.getRootNode&&e.getRootNode().host); } return s.join(','); })()`;
+      const before = probe ? await evaluate(tabId, probe).catch(() => null) : null;
       await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: cx, y: cy, deltaX: 0, deltaY: dy });
+      // Wheel scrolling is often ANIMATED (smooth scrolling, e.g. on Linux): wait until the offsets
+      // stop moving, so the table we return shows where the page actually ended up.
+      if (probe) {
+        let last = before, stable = 0;
+        for (const end = Date.now() + 1500; Date.now() < end;) {
+          await sleep(30);
+          const now = await evaluate(tabId, probe).catch(() => null);
+          if (now !== last) { last = now; stable = 0; continue; }
+          if (++stable >= 3 && (now !== before || Date.now() > end - 1200)) break; // settled (or nothing scrolls here)
+        }
+      }
       return `scroll ${dy}`;
     }
     case 'wait': {
