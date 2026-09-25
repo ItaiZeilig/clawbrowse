@@ -580,3 +580,46 @@ test('act on a big unchanged page returns only the changed rows (and says so); o
   const d = await h.act({ op: 'click', ref: rowRef(await h.observe(), 'Delete', 'Task 3') });
   assert.match(d, /gone: /, 'removed refs are listed');
 });
+
+/* --------------------------------- round 3 ---------------------------------- */
+
+test('custom select with a listbox portaled to <body>: open, pick, value shown', { skip }, async () => {
+  const t = await h.goto('round3.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Cabin class Economy') });
+  await h.act({ op: 'click', ref: mustRef(r, 'Business') });
+  assert.equal(await out(), 'cabin Business');
+  mustRef(await h.observe(), 'Cabin class Business');
+});
+
+test('identical buttons in different forms are told apart and hit correctly', { skip }, async () => {
+  const t = await h.goto('round3.html');
+  const l = t.split('\n').find((x) => x.includes('"Submit" in "Newsletter"'));
+  await h.act({ op: 'click', ref: l.split(/\s+/)[0] });
+  assert.equal(await out(), 'newsletter submit');
+});
+
+test('nameless icon buttons get icon / test-id hints instead of "button"', { skip }, async () => {
+  const t = await h.goto('round3.html');
+  mustRef(t, 'icon:trash'); mustRef(t, 'testid:share-button');
+  assert.doesNotMatch(t, /click\s+"button"/);
+  mustRef(t, 'Archive conversation'); // aria-labelledby -> hidden element still names it
+});
+
+test('multi-select takes several values', { skip }, async () => {
+  const t = await h.goto('round3.html');
+  const r = await h.act({ op: 'select', ref: mustRef(t, 'Toppings'), values: ['Cheese', 'Basil'] });
+  assert.equal(await h.js(`[...document.getElementById('top').selectedOptions].map(o=>o.text).join(',')`), 'Cheese,Basil');
+  assert.match(await h.observe(), /"Toppings"\s+▸ "Cheese, Basil"/, r);
+});
+
+test('accordion + tab state, and a sandboxed srcdoc frame is readable and clickable', { skip }, async () => {
+  const t = await h.goto('round3.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Shipping details') });
+  assert.match(r, /▾ "Shipping details"/);
+  mustRef(r, 'Track order');
+  const t2 = await h.observe();
+  const sb = t2.split('\n').find((l) => l.includes('"Sandboxed button"'));
+  assert.ok(sb, t2);
+  await h.act({ op: 'click', ref: sb.split(/\s+/)[0] });
+  assert.match(await h.cmd('read'), /sandbox clicked/);
+});

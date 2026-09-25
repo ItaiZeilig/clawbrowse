@@ -439,7 +439,8 @@ const SNAPSHOT = `(function(seed){
     if(tag==='SCRIPT'||tag==='STYLE'||tag==='NOSCRIPT'||tag==='TEMPLATE') return '';
     if(tag.toLowerCase()==='svg'){ var st=e.querySelector('title'); return e.getAttribute('aria-label')||(st?st.textContent:''); }
     var rt=(e.getRootNode&&e.getRootNode())||document; var gid=function(id){try{return (rt.getElementById&&rt.getElementById(id))||e.ownerDocument.getElementById(id);}catch(_){return null;}};
-    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(function(id){return name(gid(id),seen);}).filter(Boolean).join(' ');
+    // (A control that lists ITSELF in aria-labelledby contributes its own content, per accname.)
+    var ref=(e.getAttribute('aria-labelledby')||'').split(/\\s+/).filter(Boolean).map(function(id){ var t=gid(id); return t===e ? clean(e.textContent,80) : name(t,seen); }).filter(Boolean).join(' ');
     if(ref) return ref;
     if(e.getAttribute('aria-label')) return e.getAttribute('aria-label');
     var labs=[].slice.call(e.labels||[]).map(function(l){return name(l,seen);}).filter(Boolean).join(' ');
@@ -461,6 +462,22 @@ const SNAPSHOT = `(function(seed){
       for(var k=0;k<s.children.length;k++){ var c=s.children[k]; if(c.tagName==='LABEL' && !c.contains(e) && !c.control){ var t=name(c); if(t) return t; } }
     }
     return e.getAttribute('data-placeholder')||e.getAttribute('name')||(e.isContentEditable?'Rich text editor':'');
+  }
+  // Last resort for a nameless control (icon-font buttons): a test id, a meaningful id/name, or an
+  // icon class (fa-trash, bi-share, icon-close, material-icons text...) — shown as "icon:trash".
+  var ICON=/^(?:fa[srlbd]?|fas|far|bi|mdi|icon|icons|glyphicon|lucide|ti|ri|feather|octicon|material-icons|material-symbols-\\w+|svg-icon|ico)$/;
+  function hint(e){
+    var t=e.getAttribute('data-testid')||e.getAttribute('data-test')||e.getAttribute('data-qa')||e.getAttribute('data-cy')||e.getAttribute('data-action');
+    if(t) return 'testid:'+clean(t,40);
+    var els=[e].concat([].slice.call(e.querySelectorAll('i,span,svg,use,img')).slice(0,6));
+    for(var k=0;k<els.length;k++){
+      var cls=(els[k].getAttribute('class')||'')+' '+(els[k].getAttribute('href')||els[k].getAttribute('xlink:href')||'');
+      var m=cls.match(/(?:^|[\\s#_-])(?:fa|bi|mdi|icon|glyphicon|lucide|ti|ri|octicon|ico)[-_]([a-z][a-z0-9-]{1,30})/i);
+      if(m && !/^(solid|regular|light|brands|lg|sm|xs|fw|[0-9]x|spin|icon|button|btn)$/i.test(m[1])) return 'icon:'+m[1].toLowerCase();
+    }
+    var id=e.id||e.getAttribute('name')||'';
+    if(id && /[a-z]{3}/i.test(id) && !/\\d{3}|[0-9a-f]{8}|^(ember|react|radix|mui|headlessui|:r)/i.test(id)) return 'id:'+clean(id,40);
+    return '';
   }
   var roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio','menuitemcheckbox','option','gridcell','combobox','textbox','searchbox','spinbutton','slider','treeitem'];
   // Semantic controls + custom clickables: any contenteditable, an inline onclick, or a
@@ -611,7 +628,7 @@ const SNAPSHOT = `(function(seed){
     var r=surf.getBoundingClientRect(), lx=r.x+r.width/2, ly=r.y+r.height/2, x=lx+ox, y=ly+oy;
     if(x<0||x>=VW) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||rname), x:Math.round(x), y:Math.round(y), w:Math.round(r.width), h:Math.round(r.height)};
+    var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||hint(e)||rname), x:Math.round(x), y:Math.round(y), w:Math.round(r.width), h:Math.round(r.height)};
     var achecked=e.getAttribute('aria-checked');
     if(['checkbox','radio'].indexOf(e.type)>=0) base.checked=!!e.checked;
     else if(achecked!=null) base.checked=(achecked==='true');
@@ -641,6 +658,7 @@ const SNAPSHOT = `(function(seed){
     var list=base.off?offView:inView;
     if(e.tagName==='SELECT'){
       base.kind='select';
+      if(e.multiple) base.fmt='multiple: select values:[...]';
       base.value=[].map.call(e.selectedOptions,function(o){return o.label;}).join(', ');
       base.options=[].filter.call(e.options,function(o){return !o.disabled && !(o.closest&&o.closest('optgroup[disabled]'));}).map(function(o){return o.label;}).slice(0,40);
       list.push(base);
@@ -1539,7 +1557,7 @@ async function runOp(tabId, op) {
     }
     case 'select': {
       const R = JSON.stringify(String(REF));
-      const V = JSON.stringify(String(op.value ?? ''));
+      const VS = JSON.stringify([].concat(op.values ?? op.value ?? '').map(String));
       try {
         const res = await evaluate(T, `(function(){
           var c=window.__pawbrowse; var e=(c&&c.get)?c.get(${R}):null;
@@ -1547,9 +1565,11 @@ async function runOp(tabId, op) {
           if(e.tagName!=='SELECT') return 'not a dropdown';
           if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return 'dropdown is disabled';
           if(!e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return 'dropdown not visible';
-          var val=${V}, m=false;
-          for(var i=0;i<e.options.length;i++){var o=e.options[i]; if(!o.disabled && !(o.closest&&o.closest('optgroup[disabled]')) && (o.value===val||o.label===val||o.text===val)){e.selectedIndex=i;m=true;break;}}
-          if(!m) return 'option not found';
+          var vals=${VS}, m=0, ok=function(o){ return !o.disabled && !(o.closest&&o.closest('optgroup[disabled]')); };
+          var hit=function(o){ return vals.some(function(v){ return o.value===v||o.label===v||o.text===v; }); };
+          if(e.multiple){ for(var i=0;i<e.options.length;i++){ var o=e.options[i]; var want=ok(o)&&hit(o); if(want) m++; o.selected=want; } }
+          else for(var j=0;j<e.options.length;j++){ if(ok(e.options[j]) && hit(e.options[j])){ e.selectedIndex=j; m=1; break; } }
+          if(m<vals.length) return m ? 'some options not found' : 'option not found';
           e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true}));
           return 'ok';
         })()`);
