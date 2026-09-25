@@ -9,6 +9,8 @@
 <p align="center"><strong>Let Claude Code drive your real, logged-in Chrome — open source, no keys, no second model.</strong></p>
 
 <p align="center">
+<a href="https://www.npmjs.com/package/pawbrowse"><img src="https://img.shields.io/npm/v/pawbrowse?color=cb3837&logo=npm" alt="npm"></a>
+<a href="https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe"><img src="https://img.shields.io/badge/Chrome-Web%20Store-4285F4?logo=googlechrome&logoColor=white" alt="Chrome Web Store"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT"></a>
 <a href="CONTRIBUTING.md"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"></a>
 <a href="package.json"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg" alt="Node >=18"></a>
@@ -52,8 +54,6 @@ your browser) plus a tiny **local server** your AI client runs — both install 
 [![Add to Chrome](https://img.shields.io/badge/Add%20to-Chrome-4285F4?logo=googlechrome&logoColor=white&style=for-the-badge)](https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe)
 
 > Live on the **[Chrome Web Store](https://chromewebstore.google.com/detail/ppfdoledneneiaflggcfogecfnhkmloe)** — one click, done.
-> Prefer to run from source (contributors, or the very latest)? Clone this repo, open
-> `chrome://extensions`, turn on **Developer mode**, **Load unpacked**, and pick the `extension/` folder.
 
 ### 2 — Connect your AI client (one time)
 
@@ -77,21 +77,8 @@ should see `extension_connected: true`, and the extension badge turns **green �
 
 > Needs **Node.js ≥ 18**. Works with Claude Code, Cursor, VS Code, or any MCP client — the one
 > button/line just tells your client to run `npx -y pawbrowse@latest`; nothing to clone or build.
-
-<details>
-<summary>From source (contributors, or before the Web Store listing is live)</summary>
-
-```bash
-git clone https://github.com/ItaiZeilig/pawbrowse.git
-```
-1. **Load the extension:** `chrome://extensions` → **Developer mode** → **Load unpacked** → pick
-   the `pawbrowse/extension` folder.
-2. **Run Claude Code from the clone.** The repo ships a project [`.mcp.json`](.mcp.json), so Claude
-   Code offers to enable `pawbrowse` (running the local `mcp/server.mjs`) automatically — just
-   approve it. No npm, no manual `claude mcp add`.
-   Prefer to register it yourself? `claude mcp add --scope user pawbrowse -- node /full/path/to/pawbrowse/mcp/server.mjs`
-3. **Fully restart Claude Code** (not just `/mcp`), then run the status check above.
-</details>
+>
+> Building from source or contributing? See **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
 ## Using it
 
