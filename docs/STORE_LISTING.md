@@ -72,6 +72,10 @@ https://github.com/ItaiZeilig/pawbrowse
 
 ## Permission justifications (Privacy practices tab)
 
+**Single purpose:** "PawBrowse lets the user's own local AI coding agent (such as Claude Code)
+read and operate the web pages in the user's browser, on the user's request, over a local-only
+connection."
+
 The dashboard asks you to justify each permission. Use these:
 
 - **debugger** — "The extension drives web pages on the user's behalf via the Chrome
@@ -82,6 +86,8 @@ The dashboard asks you to justify each permission. Use these:
   API, which does not require host permissions for regular tabs, so no broad host access is
   declared. (If the dashboard still shows a host-permission field, leave it blank.)
 - **tabs** — "To list open tabs and target the correct tab for an action."
+- **tabGroups** — "To put the tabs the agent drives into a labelled tab group, so the user can see
+  which tabs are being automated and the extension can clean them up when the session ends."
 - **storage** — "To store the local bridge port number the user configures. Stored locally;
   never transmitted."
 - **alarms** — "To periodically re-establish the local WebSocket connection to the bridge
