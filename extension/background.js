@@ -408,7 +408,8 @@ const MO_INSTALL = `var M=window.__pawmo; if(!M){ M=window.__pawmo={last:perform
   M.mo=new MutationObserver(function(){ var t=performance.now(); M.last=t; M.times.push(t); if(M.times.length>64) M.times.shift(); });
   M.watch=function(r){ if(!M.roots.has(r)){ M.roots.add(r); try{ M.mo.observe(r,{subtree:true,childList:true,attributes:true,characterData:true}); }catch(_){} } };
   M.watch(document); }`;
-const SNAPSHOT = `(function(seed){
+const SNAPSHOT = `(function(seed, opts){
+  opts=opts||{};
   try{
   if(!document.body) return null;
   // A NEW document continues numbering from where the tab's previous document stopped (seed), so a
@@ -544,12 +545,13 @@ const SNAPSHOT = `(function(seed){
   // element's frame-local rect into top-level viewport coordinates (shadow roots share their
   // frame's coords; iframes add their content-box offset). Cross-origin frames can't be read from
   // here; they're reported so the agent knows content exists that it can't see.
-  var frames=[], remoteEls=[];
+  var frames=[], remoteEls=[], textRoots=[];
   function collect(){
     var out=[], seen=new Set(), scanned=0;
     function add(el, dx, dy, clk){ if(seen.has(el)) return; seen.add(el); out.push({el:el, dx:dx, dy:dy, clk:clk}); }
     function walk(root, dx, dy, depth){
       if(depth>12) return;
+      textRoots.push({root:root, dx:dx, dy:dy});
       var els; try{ els=root.querySelectorAll(selector); }catch(_){ els=[]; }
       for(var a=0;a<els.length;a++) add(els[a], dx, dy, false);
       var all; try{ all=root.querySelectorAll('*'); }catch(_){ all=[]; }
@@ -610,7 +612,7 @@ const SNAPSHOT = `(function(seed){
     if(!safe(e)||e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) continue;
     // Cheap early exit for controls screens away (huge pages have thousands): count, don't process.
     var r0=e.getBoundingClientRect();
-    if(r0.width>0 && r0.height>0){ var y0=r0.y+r0.height/2+oy; if(y0<-VH||y0>=2*VH){ if(visible(e)) farOff++; continue; } }
+    if(!opts.all && r0.width>0 && r0.height>0){ var y0=r0.y+r0.height/2+oy; if(y0<-VH||y0>=2*VH){ if(visible(e)) farOff++; continue; } }
     var surf=cache.surface(e); if(!surf) continue;
     var rname=role(e);
     if(!rname){
@@ -646,7 +648,7 @@ const SNAPSHOT = `(function(seed){
     } else if(y<0||y>=VH){
       // Off-screen (scrolled away): keep the nearest ones so the agent knows they exist; acting on
       // them scrolls them into view first.
-      if(y<-VH/2||y>=1.5*VH){ farOff++; continue; }
+      if(!opts.all && (y<-VH/2||y>=1.5*VH)){ farOff++; continue; }
       base.off=y<0?'up':'down'; base.dist=y<0?-y:y-VH;
     } else if((function(){ var fv=surf.ownerDocument.defaultView; return fv!==window && (lx<0||ly<0||lx>=fv.innerWidth||ly>=fv.innerHeight); })()){
       base.off='scroll'; // scrolled out of its (same-origin) iframe's viewport
@@ -684,8 +686,9 @@ const SNAPSHOT = `(function(seed){
   var omitted=Math.max(0, inView.length-250); inView.splice(250);
   // Keep the 25 off-screen controls NEAREST the visible area (not the first 25 in DOM order, which
   // for a scrolled list are the rows furthest behind), then restore page order.
-  var offMore=Math.max(0, offView.length-25)+farOff;
-  if(offView.length>25){ offView.forEach(function(a,k){ a.ord=k; }); offView.sort(function(a,b){ return a.dist-b.dist; }); offView.splice(25); offView.sort(function(a,b){ return a.ord-b.ord; }); }
+  var OFFCAP=opts.all?400:25;
+  var offMore=Math.max(0, offView.length-OFFCAP)+farOff;
+  if(offView.length>OFFCAP){ offView.forEach(function(a,k){ a.ord=k; }); offView.sort(function(a,b){ return a.dist-b.dist; }); offView.splice(OFFCAP); offView.sort(function(a,b){ return a.ord-b.ord; }); }
   var actions=inView.concat(offView);
   // The nearest ancestor text that isn't just the label itself: which row/item a control is in.
   function ctxOf(el, lab){
@@ -764,7 +767,28 @@ const SNAPSHOT = `(function(seed){
     cache.byId[id]=identity(hit);
     return hit;
   };
-  return {url:location.href, title:document.title, vh:innerHeight, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, probe:pendingHosts.length, actions:actions};
+  // Optional: the visible text in reading order (top-to-bottom, left-to-right), for prices, headings
+  // and results the controls table doesn't carry.
+  var vtext='';
+  if(opts.text){ try{
+    var frags=[], seenT=0;
+    textRoots.forEach(function(tr){
+      var doc=tr.root.ownerDocument||tr.root, w=doc.createTreeWalker(tr.root.body||tr.root, NodeFilter.SHOW_TEXT), rg=doc.createRange(), nd;
+      while((nd=w.nextNode()) && seenT<20000){ seenT++;
+        var v=nd.textContent.replace(/\\s+/g,' ').trim(), p=nd.parentElement;
+        if(!v||!p||p.closest('script,style,noscript,template')||!visible(p)) continue;
+        rg.selectNodeContents(nd); var q=rg.getBoundingClientRect(), ty=q.y+tr.dy, tx=q.x+tr.dx;
+        if(q.width<=0||q.height<=0||ty+q.height<0||ty>=VH||tx>=VW||tx+q.width<0) continue;
+        frags.push({t:v, x:tx, y:ty});
+      }
+    });
+    frags.sort(function(a,b){ return Math.round(a.y/6)-Math.round(b.y/6) || a.x-b.x; });
+    var lines=[], cur=null, lastY=-1e9;
+    frags.forEach(function(f){ if(Math.abs(f.y-lastY)>6){ if(cur) lines.push(cur); cur=f.t; lastY=f.y; } else cur+=' '+f.t; });
+    if(cur) lines.push(cur);
+    vtext=lines.join('\\n').slice(0,4000);
+  }catch(_){} }
+  return {url:location.href, title:document.title, vh:innerHeight, text:vtext, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, probe:pendingHosts.length, actions:actions};
   }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, omitted:0, actions:[]}; }
 })`;
 
@@ -1001,16 +1025,17 @@ async function probeClosedRoots(target) {
   return found;
 }
 
-async function snapshot(target, tries = 8) {
+async function snapshot(target, tries = 8, opts) {
+  const O = JSON.stringify(opts || {});
   const sk = typeof target === 'object' ? `${target.tabId}#${frameKey(target)}` : target;
   let last;
   for (let i = 0; i < tries; i++) {
     try {
-      let snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+      let snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1}, ${O})`);
       // Closed shadow roots found: re-snapshot with them (nested closed hosts: a few rounds).
       for (let k = 0; k < 3 && snap && snap.probe; k++) {
         if (!(await probeClosedRoots(target).catch(() => 0))) break;
-        snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1})`);
+        snap = await evaluate(target, `${SNAPSHOT}(${refSeed.get(sk) || 1}, ${O})`);
       }
       if (snap) { if (snap.next > (refSeed.get(sk) || 1)) { refSeed.set(sk, snap.next); persistState(); } return snap; }
     } catch (e) { last = e; }
@@ -1053,12 +1078,23 @@ function deltaTable(prev, cur) {
   return out.join('\n');
 }
 
-async function observe(tabId) {
-  const snap = await snapshot(tabId);
+async function observe(tabId, opts) {
+  const find = opts && opts.find != null && String(opts.find).trim() ? String(opts.find).trim().toLowerCase() : null;
+  const snap = await snapshot(tabId, 8, { all: !!find, text: !!(opts && opts.text) });
   if (snap) snap.frameSnaps = await readFrames(tabId, tabId, snap, []);
-  const t = formatTable(snap).replace('\n', `\n${formatTools(tabId)}`.replace(/\n$/, '') + '\n').replace(/\n\n/, '\n');
-  lastTable.set(tabId, tableBody(t));
-  lastFull.set(tabId, t);
+  if (find && snap) {
+    // Whole-page search: only rows whose label / row context / value mention the query.
+    const hit = (a) => [a.label, a.ctx, a.value].some((v) => v && String(v).toLowerCase().includes(find));
+    const total = snap.actions.length;
+    snap.actions = snap.actions.filter(hit).slice(0, 80);
+    for (const f of snap.frameSnaps) f.snap.actions = f.snap.actions.filter(hit);
+    snap.omitted = 0; snap.offMore = 0;
+    snap.findNote = `(find "${opts.find}": ${snap.actions.length} of ${total} controls on the whole page match; browser_observe without find for the full table)`;
+  }
+  let t = formatTable(snap).replace('\n', `\n${formatTools(tabId)}`.replace(/\n$/, '') + '\n').replace(/\n\n/, '\n');
+  if (snap && snap.findNote) t = t.replace(/\n/, `\n${snap.findNote}\n`);
+  if (snap && snap.text) t += `\n\nvisible text (untrusted page content):\n${snap.text}`;
+  if (!find) { lastTable.set(tabId, tableBody(t)); lastFull.set(tabId, t); }
   return t;
 }
 
@@ -1725,7 +1761,7 @@ async function handleCommand(cmd, args, token, session) {
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       assertNoOpenDialog(tabId);
-      return observe(tabId);
+      return observe(tabId, args);
     }
     case 'read': {
       const tabId = await resolveTabId(session, args, 'inspect');

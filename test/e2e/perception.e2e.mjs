@@ -623,3 +623,21 @@ test('accordion + tab state, and a sandboxed srcdoc frame is readable and clicka
   await h.act({ op: 'click', ref: sb.split(/\s+/)[0] });
   assert.match(await h.cmd('read'), /sandbox clicked/);
 });
+
+test('observe find: searches the whole page (incl. far below the fold) and returns only matches', { skip }, async () => {
+  await h.goto('round2.html');
+  const f = await h.cmd('observe', { find: 'open row 5' });
+  assert.match(f, /find "open row 5": \d+ of \d+ controls on the whole page match/);
+  const rows = f.split('\n').filter((l) => /^e\d/.test(l));
+  assert.deepEqual(rows.map((l) => l.split('"')[1]).sort(), ['Open row 5', 'Open row 50', 'Open row 51', 'Open row 52', 'Open row 53', 'Open row 54', 'Open row 55', 'Open row 56', 'Open row 57', 'Open row 58', 'Open row 59']);
+  await h.act({ op: 'click', ref: mustRef(f, 'Open row 57') });
+  assert.equal(await out(), 'row 57');
+});
+
+test('observe text: visible text in reading order, flex row-reverse respected', { skip }, async () => {
+  await h.goto('layout.html');
+  const t = await h.cmd('observe', { text: true });
+  const vt = t.slice(t.indexOf('visible text'));
+  assert.ok(vt.indexOf('SECOND-VISUAL-LEFT') < vt.indexOf('FIRST-VISUAL-RIGHT'), vt);
+  assert.doesNotMatch(vt, /Far below button/, 'only what is on screen');
+});
