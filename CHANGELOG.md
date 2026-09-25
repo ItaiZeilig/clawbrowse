@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-26
+
+### Fixed
+Found by driving 0.6.0 through the real extension in Chrome:
+- **A rich-text editor (contenteditable) took its own text as its label.** After typing into
+  one, its label changed and the next action on the same ref was refused. An editor's text is now
+  only its value.
+- **"page did NOT change" was reported when an action's only effect was page text or a dialog**
+  (e.g. a result message, or an answered prompt), which nudges an agent into retries. Change
+  detection now covers page text and dialogs.
+
 ## [0.6.0] - 2026-09-25
 
 ### Added — perception v2 (sees and drives far more real-world HTML)
