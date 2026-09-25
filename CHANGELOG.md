@@ -54,6 +54,11 @@ Ported and extended the unmerged `planner-state-final` snapshot work from browse
   `navigate` to a fast page drops from ~380ms to ~100ms; a click that does nothing returns in
   ~30ms. Analytics beacons, polling and constantly-animating pages no longer hold a wait until
   its cap.
+- **The Network domain is only on while an action is being watched.** Left on during an ad-heavy
+  page load, it slowed the whole browser: a navigation after w3schools took 17–30s. Page loads now
+  wait on lifecycle events tied to the new document's loader (DOMContentLoaded, then
+  `networkAlmostIdle`), and the wait ends early once the page is complete and quiet. w3schools
+  now loads in ~2s, versus ~22s on the previous release.
 - **Delta results.** When `act` leaves the page mostly unchanged, it returns only the new or
   changed rows plus the refs that are gone, e.g. 2 rows instead of 60. `observe` always returns
   the full table.

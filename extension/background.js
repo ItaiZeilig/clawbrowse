@@ -240,8 +240,10 @@ async function attach(tabId) {
   await sendCdp(tabId, 'Runtime.enable', {}).catch(() => {});
   await sendCdp(tabId, 'Page.enable', {}).catch(() => {});
   await sendCdp(tabId, 'DOM.enable', {}).catch(() => {});
-  // Network events (no bodies buffered) let waits follow the page's real fetch/XHR activity.
-  await sendCdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }).catch(() => {});
+  // Lifecycle events (cheap: a handful per load) tell us when a new document is ready. The Network
+  // domain is NOT left on: on ad-heavy pages (hundreds of requests) it slows the whole browser, so
+  // it's switched on only around actions (netOn/netOff), where "did this click start a fetch?" matters.
+  await sendCdp(tabId, 'Page.setLifecycleEventsEnabled', { enabled: true }).catch(() => {});
   try { const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree'); tabWatch(tabId).mainFrame = frameTree.frame.id; } catch {}
   // WebMCP (sites exposing their own agent tools; Chrome 146+ behind a flag / origin trial).
   await sendCdp(tabId, 'WebMCP.enable', {}).catch(() => {});
@@ -1276,7 +1278,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
   if (source.sessionId) return; // everything else: the top-level target only
   const now = Date.now();
-  const begin = (loaderId) => { w.navStart = now; w.navDone = 0; w.committed = false; w.navReq = loaderId || null; };
+  const begin = (loaderId) => { w.navStart = now; w.navDone = 0; w.committed = false; w.navReq = loaderId || null; w.netIdle = 0; };
   switch (method) {
     case 'Network.requestWillBeSent':
       // Documents: only the main frame's (subframe documents finish on other sessions / may never).
@@ -1293,7 +1295,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       if (params.frameId === w.mainFrame && params.navigationType !== 'sameDocument') begin(params.loaderId);
       break;
     case 'Page.frameNavigated':
-      if (!params.frame.parentId) { w.mainFrame = params.frame.id; w.committed = true; }
+      if (!params.frame.parentId) { w.mainFrame = params.frame.id; w.committed = true; if (params.frame.loaderId) w.navReq = params.frame.loaderId; }
       break;
     // The OLD document can still fire load/stop events after a navigation starts: only events that
     // follow the new document's commit (frameNavigated) mean "arrived".
@@ -1302,6 +1304,13 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       break;
     case 'Page.frameStoppedLoading':
       if (params.frameId === w.mainFrame && w.committed) w.navDone = now;
+      break;
+    case 'Page.lifecycleEvent':
+      // Tied to the NEW document's loader, so the old page's late events can't end a wait.
+      if (params.frameId === w.mainFrame && params.loaderId && params.loaderId === w.navReq) {
+        if (params.name === 'DOMContentLoaded' || params.name === 'load') { w.committed = true; w.navDone = now; }
+        if (params.name === 'networkAlmostIdle' || params.name === 'networkIdle') w.netIdle = now;
+      }
       break;
     case 'Page.downloadWillBegin': case 'Page.navigatedWithinDocument':
       w.navDone = now;
@@ -1315,6 +1324,20 @@ const quietExpr = (since) => `(function(){ ${MO_INSTALL}
   M.times.forEach(function(t){ if(t<s && t>=s-600) b[Math.floor((s-t)/100)]=1; });
   return [now-M.last, Object.keys(b).length>=4];
 })()`;
+
+// Network tracking only while an action is being watched (see attach()).
+async function netOn(tabId) {
+  const w = tabWatch(tabId);
+  if (w.net) return;
+  w.net = true;
+  await sendCdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }).catch(() => { w.net = false; });
+}
+async function netOff(tabId) {
+  const w = tabWatch(tabId);
+  if (!w.net) return;
+  w.net = false; w.inflight.clear();
+  await sendCdp(tabId, 'Network.disable').catch(() => {});
+}
 
 async function settle(tabId, capMs, since, opts) {
   const start = since || Date.now();
@@ -1337,8 +1360,27 @@ async function settle(tabId, capMs, since, opts) {
     const navigating = w.navStart >= start - 50 && w.navDone < w.navStart;
     // A navigation gets a longer allowance: the next page must actually arrive.
     if (now > (navigating ? Math.max(deadline, start + 10000) : deadline)) break;
-    if (navigating) { sawNav = true; await sleep(30); continue; }
-    if (sawNav) { sawNav = false; windowEnd = Math.max(windowEnd, w.navDone + 500); }
+    if (navigating) {
+      // Once the new document has committed, stop network tracking: its (possibly hundreds of)
+      // subresource requests would only slow the browser down. Lifecycle events take over.
+      if (w.committed && w.net) await netOff(tabId);
+      sawNav = true; await sleep(30); continue;
+    }
+    if (sawNav) {
+      sawNav = false; windowEnd = Math.max(windowEnd, w.navDone + 500);
+      if (!w.net) {
+        // New page: let its initial data requests settle (Chrome's networkAlmostIdle), capped.
+        // Ends early once the document is fully loaded and the DOM has been quiet for 300ms.
+        const until = Math.min(deadline, w.navDone + 800);
+        while (!(w.netIdle >= w.navStart) && Date.now() < until) {
+          try {
+            const [q, , rs] = await evaluate(tabId, `(function(){ var r=${quietExpr(start)}; return [r[0], r[1], document.readyState]; })()`);
+            if (rs === 'complete' && q >= 300) break;
+          } catch {}
+          await sleep(40);
+        }
+      }
+    }
     let busy = false;
     for (const [id, t] of w.inflight) {
       if (now - t > 15000) { w.inflight.delete(id); continue; } // leaked / long-poll: forget it
@@ -1832,6 +1874,8 @@ async function handleCommand(cmd, args, token, session) {
         for (; i < ops.length && ops[i].op === 'dialog'; i++) logLines.push('  ' + await runOp(tabId, ops[i]));
         assertNoOpenDialog(tabId);
         const before = await evaluate(tabId, SIG).catch(() => null);
+        await netOn(tabId);
+        try {
         for (; i < ops.length; i++) {
           const op = ops[i];
           if (aborted()) { logLines.push('  (aborted: command timed out; remaining ops not run)'); break; }
@@ -1840,6 +1884,7 @@ async function handleCommand(cmd, args, token, session) {
           catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
           if (op.op !== 'wait') await settle(tabId, i === ops.length - 1 ? 4000 : 2500, t0, { grace: op.op === 'type' ? 400 : 0 });
         }
+        } finally { await netOff(tabId); }
         const after = await evaluate(tabId, SIG).catch(() => null);
         const seen = lastTable.get(tabId), seenFull = lastFull.get(tabId);
         // The ops already executed; a failed post-action read (page navigating) must NOT make
