@@ -1,0 +1,8 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Canvas app</title></head><body style="margin:20px">
+<canvas id="c" width="400" height="200" style="border:1px solid"></canvas><p id="out"></p>
+<script>
+ const c=document.getElementById('c'), g=c.getContext('2d');
+ g.fillStyle='#2563eb'; g.fillRect(250,120,100,40); g.fillStyle='#fff'; g.font='16px sans-serif'; g.fillText('Approve',268,146);
+ c.addEventListener('click',e=>{ const r=c.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top;
+   document.getElementById('out').textContent = (x>=250&&x<=350&&y>=120&&y<=160) ? 'approved' : 'missed '+Math.round(x)+','+Math.round(y); });
+</script></body></html>

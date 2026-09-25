@@ -10,8 +10,9 @@ name: Deploy extension to Chrome Web Store
 #   CWS_CLIENT_SECRET    OAuth client secret
 #   CWS_REFRESH_TOKEN    OAuth refresh token   (generated once via the consent flow)
 #
-# IMPORTANT: bump extension/manifest.json "version" before each release —
-# the Web Store rejects re-uploading a version that already exists.
+# The manifest version is synced to the release tag automatically at build time
+# (the Web Store rejects re-uploading an existing version), so you only bump
+# package.json + cut a release vX.Y.Z; the store gets X.Y.Z too.
 
 on:
   release:
@@ -45,6 +46,17 @@ jobs:
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Chrome Web Store secrets not set; skipping extension deploy."
           fi
+
+      - name: Sync manifest version to the release
+        if: steps.creds.outputs.configured == 'true'
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="$(node -p "require('./package.json').version")"
+          fi
+          echo "Setting extension/manifest.json version to $VER"
+          VER="$VER" node -e "const fs=require('fs'),p='extension/manifest.json',m=JSON.parse(fs.readFileSync(p));m.version=process.env.VER;fs.writeFileSync(p,JSON.stringify(m,null,2)+'\n')"
 
       - name: Package extension/ -> pawbrowse-extension.zip
         if: steps.creds.outputs.configured == 'true'

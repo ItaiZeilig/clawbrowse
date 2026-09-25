@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Tricky</title></head><body style="font:14px sans-serif">
+<button aria-label="Close"><svg width="16" height="16"><path d="M0 0L16 16"/></svg></button>
+<button><svg width="16" height="16" role="img"><title>Settings</title><circle cx="8" cy="8" r="6"/></svg></button>
+<button>Save<span style="display:none">SECRET HIDDEN TEXT</span></button>
+<button>Quote "this" \ and <b>bold</b></button>
+<a onclick="o('fake link')" style="cursor:pointer">Fake link no href</a>
+<fieldset disabled><button>In disabled fieldset</button></fieldset>
+<div inert><button>Inert button</button></div>
+<details><summary>More options</summary><button>Hidden in details</button></details>
+<button style="pointer-events:none">No pointer events</button>
+<div style="position:relative;display:inline-block"><button onclick="o('under')">Under overlay</button><div style="position:absolute;inset:0;background:rgba(0,0,0,.01)"></div></div>
+<button id="morph" onclick="this.textContent='Delete forever'">Archive</button>
+<button id="vanish" onmousedown="this.remove()">Vanish on press</button>
+<div role="button" tabindex="0" onclick="o('div button')">Div role button</div>
+<p id="out"></p>
+<script>function o(s){document.getElementById('out').textContent=s}</script>
+</body></html>

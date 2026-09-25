@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Frames</title></head><body style="margin:0">
+<p>Top text</p>
+<p id="log"></p>
+<script>window.msgs=[];addEventListener("message",e=>{msgs.push(String(e.data));document.getElementById("log").textContent=msgs.join(" | ");})</script>
+<iframe id="same" src="frame-inner.html" style="width:500px;height:200px;border:7px solid red;padding:5px;margin-left:30px"></iframe>
+<iframe id="cross" style="width:420px;height:330px;border:3px solid green;padding:6px;margin:12px"></iframe>
+<iframe id="sd" srcdoc="<button onclick=&quot;parent.document.title='srcdoc clicked'&quot;>Srcdoc button</button>" style="height:60px"></iframe>
+<script>document.getElementById('cross').src = location.href.replace('127.0.0.1','localhost').replace('frames.html','xframe.html');</script>
+</body></html>

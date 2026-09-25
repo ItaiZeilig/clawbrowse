@@ -1,0 +1,14 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Cross</title></head><body style="margin:8px">
+<p>Cross frame text</p>
+<button onclick="document.getElementById('o').textContent='cross clicked'">Cross button</button>
+<label><input type="checkbox" id="xc"> Cross check</label>
+<label>Card number <input id="card"></label>
+<button onclick="o2()">Cross confirm</button>
+<p id="o"></p>
+<iframe id="back" style="width:300px;height:120px;border:4px solid blue;margin-top:6px"></iframe>
+<script>
+ function o2(){ document.getElementById('o').textContent = confirm('Pay now?') ? 'paid' : 'not paid'; }
+ // Nested frame back on the TOP page's site: cross-origin to this frame, in the top's process.
+ document.getElementById('back').src = location.href.replace('localhost','127.0.0.1').replace('xframe.html','frame-inner.html');
+</script><script>new MutationObserver(()=>top.postMessage(location.host+" "+document.getElementById("o").textContent,"*")).observe(document.getElementById("o"),{childList:true,subtree:true,characterData:true});document.addEventListener("change",e=>top.postMessage(location.host+" "+e.target.id+"="+(e.target.type==="checkbox"?e.target.checked:e.target.value),"*"));</script>
+</body></html>

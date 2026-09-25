@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Shadow</title></head><body>
+<p>Shadow page</p>
+<x-open></x-open><x-closed></x-closed><x-nested></x-nested>
+<x-lock></x-lock>
+<x-slot><button id="slotted">Slotted action</button></x-slot>
+<p id="out"></p>
+<script>
+ customElements.define('x-open', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});r.innerHTML='<p>Inside open shadow text</p><button id="b">Open shadow button</button><label for="i">Shadow field</label><input id="i">';r.getElementById('b').onclick=()=>document.getElementById('out').textContent='open clicked';}});
+ customElements.define('x-closed', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'closed'});r.innerHTML='<button>Closed shadow button</button>';r.querySelector('button').onclick=()=>document.getElementById('out').textContent='closed clicked';}});
+ customElements.define('x-nested', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});r.innerHTML='<div><x-inner></x-inner></div>';}});
+ customElements.define('x-inner', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});r.innerHTML='<button>Deep nested button</button>';r.querySelector('button').onclick=()=>document.getElementById('out').textContent='deep clicked';}});
+ customElements.define('x-slot', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'open'});r.innerHTML='<div style="padding:20px;border:1px solid"><slot></slot></div>';}});
+ customElements.define('x-lock', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'closed'});r.innerHTML='<p>Locked panel text</p><x-vault></x-vault>';}});
+ customElements.define('x-vault', class extends HTMLElement{connectedCallback(){const r=this.attachShadow({mode:'closed'});r.innerHTML='<label>PIN <input id="pin"></label>';window.__pin=r.getElementById('pin');}});
+ document.getElementById('slotted').onclick=()=>document.getElementById('out').textContent='slotted clicked';
+</script></body></html>

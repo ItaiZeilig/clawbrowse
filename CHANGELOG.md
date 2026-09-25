@@ -6,6 +6,89 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — perception v2 (sees and drives far more real-world HTML)
+Ported and extended the unmerged `planner-state-final` snapshot work from browser-use/jev-ultrafast.
+- **Styled checkboxes, radios, switches and file pickers** whose native input is hidden (opacity 0,
+  0×0, `display:none`, sr-only) are now listed and clicked through their visible label/card.
+- **Date, time, datetime-local, month, week, color and range inputs** are fillable: `type` sets the
+  value the way a picker does (native setter + input/change) and rows show the expected `fmt{…}`.
+  Invalid values are rejected with a clear error; clamped ranges report the real value.
+- **File upload**: `{op:"upload", ref, paths:[…]}` (needs "Allow access to file URLs" for the
+  extension).
+- **Off-screen controls** within about a viewport are listed with `↑`/`↓`/`↕` (acting scrolls them in),
+  and the ones nearest the visible area are kept. Covered controls are flagged `⊘ covered`.
+  Further-away ones are counted.
+- **Repeated labels are disambiguated** with their row (`"Delete" in "Invoice #1002 — Globex"`).
+- Unlabelled fields use a nearby `<label>`; contenteditable editors use their placeholder; required
+  and invalid fields are marked. Focus is reported, and so are cross-origin frames the table can't
+  see into.
+- `read` now includes open shadow-DOM, slotted and same-origin iframe text.
+- `{op:"scroll", ref}` scrolls the panel that contains that control, not the page.
+
+### Added — reach every kind of page
+- **Cross-origin iframes.** Embedded checkouts, logins and widgets are read and driven: cross-site
+  frames are attached as child sessions (`chrome.debugger` `sessionId`, Chrome 125+), and
+  cross-origin same-site and sandboxed frames get their own isolated world. Refs look like
+  `f2.e5`, clicks are offset by the frame's position, dialogs raised inside frames are answered,
+  and `read` includes frame text. Invisible ad and tracking frames are skipped without cost.
+- **Closed shadow roots**, including a closed root nested inside another, via CDP
+  (`DOM.describeNode` with pierce).
+- **WebMCP.** Tools a page registers (`navigator.modelContext.registerTool` or
+  `<form toolname>`) are listed at the top of the table with typed signatures, and
+  `{op:"tool"}` calls one. Output is marked as untrusted.
+- **`browser_screenshot`** returns a JPEG in CSS pixels with the table's refs drawn on it.
+  `{op:"click_xy"}` then clicks by image coordinates, for canvas apps (Docs/Sheets, Figma,
+  maps) and anything else the table can't express.
+- **More ways to act:** `hover`; `drag` (pointer widgets, and native HTML5 drag-and-drop via
+  `Input.setInterceptDrags`), with the target given by ref, text or offset; any key or chord
+  (`Shift+Tab`, `Mod+A`, F-keys, single characters); double-click and right-click;
+  `select values:[…]` for `<select multiple>`. Draggable elements are marked `⇄`.
+- **`observe find:"…"`** searches every control on the page and returns only the matches.
+  **`text:true`** adds the visible text in reading order.
+- Nameless icon buttons are labelled `icon:trash` or `testid:share-button` instead of `"button"`.
+
+### Changed — faster and cheaper
+- **Waits follow what the page is actually doing:** navigation (commit-aware), fetch/XHR started
+  by the action (including chained requests), then a short DOM-quiet window, all with caps. The
+  table after a click that fetches is no longer stale; a debounced search returns its results;
+  `navigate` to a fast page drops from ~380ms to ~100ms; a click that does nothing returns in
+  ~30ms. Analytics beacons, polling and constantly-animating pages no longer hold a wait until
+  its cap.
+- **The Network domain is only on while an action is being watched.** Left on during an ad-heavy
+  page load, it slowed the whole browser: a navigation after w3schools took 17–30s. Page loads now
+  wait on lifecycle events tied to the new document's loader (DOMContentLoaded, then
+  `networkAlmostIdle`), and the wait ends early once the page is complete and quiet. w3schools
+  now loads in ~2s, versus ~22s on the previous release.
+- **Delta results.** When `act` leaves the page mostly unchanged, it returns only the new or
+  changed rows plus the refs that are gone, e.g. 2 rows instead of 60. `observe` always returns
+  the full table.
+- **Refs survive re-renders that replace nodes**, both within a batch and across observations.
+  A new element takes over a vanished element's ref only when role, label and row context match
+  one element exactly.
+
+### Fixed
+- **Pages could blind PawBrowse.** All page-side code now runs in a CDP isolated world, so a site
+  that patches `Array.prototype`/`JSON`/`Element.prototype` or defines `window.__pawbrowse` no longer
+  yields an empty table.
+- **`alert()`/`confirm()`/`prompt()` froze the tab.** Dialogs raised by an action are now answered
+  and reported: alerts are accepted; confirm, prompt and beforeunload are dismissed unless the op
+  passes `dialog:"accept"`. A dialog left open by the user produces a clear error, and
+  `{op:"dialog"}` answers it.
+- **A stale ref could click a different element after navigation.** Ref numbers no longer restart
+  on a new document, so an old ref fails with "unknown ref".
+- `display:none` text no longer leaks into labels. `display:contents` wrappers and `<slot>`s no
+  longer hide their content.
+- Scrolls, popovers and other visible changes no longer report "page did NOT change".
+- A submit button's value is no longer echoed as its current value.
+
+### Tests
+- New real-browser e2e suite (`npm run test:e2e`, also in CI): it loads the shipped `background.js`
+  against headless Chrome through a `chrome.debugger` shim and checks adversarial scenarios
+  against ground truth read from the page (now 75 scenarios). The previous code passes 14 of them
+  and hangs on the dialog cases.
+- Opt-in suite driving the real unpacked extension in Chrome for Testing through the real MCP
+  server (`CFT_PATH=… npm run test:e2e`).
+
 ## [0.5.1] - 2026-09-23
 
 ### Fixed

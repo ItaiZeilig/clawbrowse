@@ -1,0 +1,29 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Round3</title>
+<style>body{font:14px sans-serif;margin:10px} .i{display:inline-block;width:16px;height:16px;background:#999}
+ #lb{position:absolute;background:#fff;border:1px solid;list-style:none;padding:2px;margin:0}</style></head><body>
+<!-- custom select: button + listbox portaled to body -->
+<div id="cs"><span id="cs-label">Cabin class</span> <button id="cs-btn" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="cs-label cs-btn"><span id="cs-val">Economy</span></button></div>
+<!-- two forms with identical Submit buttons -->
+<form id="login" onsubmit="event.preventDefault();o('login submit')"><h3>Login</h3><input aria-label="User"><button>Submit</button></form>
+<form id="news" onsubmit="event.preventDefault();o('newsletter submit')"><h3>Newsletter</h3><input aria-label="Newsletter email"><button>Submit</button></form>
+<!-- label from HIDDEN element via aria-labelledby (valid per accname) -->
+<span id="hid" hidden>Archive conversation</span><button aria-labelledby="hid" onclick="o('archived')"><span class="i"></span></button>
+<!-- icon-font buttons with no text: only class / testid hints -->
+<button class="btn"><i class="fa fa-trash"></i></button>
+<button data-testid="share-button"><span class="i"></span></button>
+<!-- multi select -->
+<label>Toppings <select id="top" multiple size="3"><option>Cheese</option><option>Olives</option><option>Basil</option></select></label>
+<!-- tabs + accordion -->
+<div role="tablist"><button role="tab" aria-selected="true">Overview</button><button role="tab" aria-selected="false" onclick="this.setAttribute('aria-selected','true');this.previousElementSibling.setAttribute('aria-selected','false');o('specs tab')">Specs</button></div>
+<button aria-expanded="false" onclick="this.setAttribute('aria-expanded','true');document.getElementById('acc').hidden=false">Shipping details</button><div id="acc" hidden><button onclick="o('acc inner')">Track order</button></div>
+<!-- sandboxed srcdoc frame: opaque origin, in-process, not readable by page JS -->
+<iframe sandbox="allow-scripts" srcdoc="<button onclick=&quot;document.body.append('sandbox clicked')&quot;>Sandboxed button</button>" style="width:300px;height:60px"></iframe>
+<p id="out"></p>
+<script>
+ function o(s){document.getElementById('out').textContent=s}
+ const btn=document.getElementById('cs-btn');
+ btn.onclick=()=>{ if(document.getElementById('lb')) return; const r=btn.getBoundingClientRect(); const ul=document.createElement('ul'); ul.id='lb'; ul.setAttribute('role','listbox');
+   ul.style.left=r.left+'px'; ul.style.top=(r.bottom+scrollY)+'px';
+   for (const c of ['Economy','Premium economy','Business']) { const li=document.createElement('li'); li.setAttribute('role','option'); li.textContent=c; li.onclick=()=>{ document.getElementById('cs-val').textContent=c; ul.remove(); btn.setAttribute('aria-expanded','false'); o('cabin '+c); }; ul.append(li); }
+   document.body.append(ul); btn.setAttribute('aria-expanded','true'); };
+</script></body></html>

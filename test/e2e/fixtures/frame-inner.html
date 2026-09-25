@@ -1,0 +1,6 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Inner</title></head><body style="margin:0">
+<p>Inner frame text</p><button id="ib" onclick="document.getElementById('o').textContent='inner clicked'">Inner button</button>
+<label><input type="checkbox" id="ic"> Inner check</label><p id="o"></p>
+<div style="height:600px"></div><button onclick="document.getElementById('o').textContent='low clicked'">Low inner button</button>
+<script>new MutationObserver(()=>top.postMessage(location.host+" "+document.getElementById("o").textContent,"*")).observe(document.getElementById("o"),{childList:true,subtree:true,characterData:true});document.addEventListener("change",e=>top.postMessage(location.host+" "+e.target.id+"="+(e.target.type==="checkbox"?e.target.checked:e.target.value),"*"));</script>
+</body></html>

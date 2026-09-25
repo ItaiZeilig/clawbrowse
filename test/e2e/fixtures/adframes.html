@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Ads</title></head><body>
+<button onclick="document.getElementById('out').textContent='top ok'">Top action</button>
+<div id="ads"></div><iframe id="real" style="width:420px;height:300px"></iframe><p id="out"></p>
+<script>
+ const x = location.href.replace('127.0.0.1','localhost').replace(/adframes\.html.*/,'');
+ let h=''; for(let i=0;i<150;i++){ const st=['display:none','width:1px;height:1px','width:0;height:0;border:0','visibility:hidden'][i%4]; h+='<iframe src="'+x+'slow.html?ad='+i+'" style="'+st+'"></iframe>'; }
+ document.getElementById('ads').innerHTML=h;
+ document.getElementById('real').src = x + 'xframe.html';
+</script></body></html>
