@@ -30,7 +30,7 @@ export function chromePath() {
   return c.find((p) => fs.existsSync(p)) || null;
 }
 
-function serve() {
+export function serve() {
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const file = path.join(FIXTURES, path.normalize(decodeURIComponent(u.pathname)).replace(/^([/\\])+/, ''));
