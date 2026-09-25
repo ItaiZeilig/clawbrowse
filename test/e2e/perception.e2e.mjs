@@ -371,3 +371,31 @@ test('navigate waits for a slow page, returns fast for a fast one, and reports n
   assert.ok(performance.now() - t0 < 300, `fast navigate took ${(performance.now() - t0).toFixed(0)}ms`);
   await assert.rejects(h.goto('http://127.0.0.1:1/'), /navigation failed: net::ERR_/);
 });
+
+/* ------------------------ refs across node-replacing re-renders ------------- */
+
+const rowRef = (t, label, row) => {
+  const l = t.split('\n').find((x) => x.includes(`"${label}" in "${row}`));
+  assert.ok(l, `no "${label}" row for ${row} in:\n${t}`);
+  return l.split(/\s+/)[0];
+};
+
+test('a batch keeps working when every click re-renders (replaces) the whole list', { skip }, async () => {
+  const t = await h.goto('rerender.html');
+  const r = await h.act({ op: 'click', ref: rowRef(t, 'Done', 'Walk dog') }, { op: 'click', ref: rowRef(t, 'Done', 'Call mom') });
+  assert.doesNotMatch(r, /no longer on page/, r);
+  assert.equal(await out(), 'Walk dog,Call mom|Buy milk,Walk dog,Pay rent,Call mom,Fix bike');
+});
+
+test('after a row is deleted, the other rows\' refs still hit the right row', { skip }, async () => {
+  const t = await h.goto('rerender.html');
+  await h.act({ op: 'click', ref: rowRef(t, 'Delete', 'Walk dog') }, { op: 'click', ref: rowRef(t, 'Done', 'Pay rent') });
+  assert.equal(await out(), 'Pay rent|Buy milk,Pay rent,Call mom,Fix bike');
+});
+
+test('a ref to a row that no longer exists fails instead of hitting a neighbour', { skip }, async () => {
+  const t = await h.goto('rerender.html');
+  const r = await h.act({ op: 'click', ref: rowRef(t, 'Delete', 'Walk dog') }, { op: 'click', ref: rowRef(t, 'Done', 'Walk dog') });
+  assert.match(r, /no longer on page/);
+  assert.equal(await out(), '|Buy milk,Pay rent,Call mom,Fix bike');
+});

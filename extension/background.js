@@ -643,6 +643,14 @@ const SNAPSHOT = `(function(seed){
   var offMore=Math.max(0, offView.length-25)+farOff;
   if(offView.length>25){ offView.forEach(function(a,k){ a.ord=k; }); offView.sort(function(a,b){ return a.dist-b.dist; }); offView.splice(25); offView.sort(function(a,b){ return a.ord-b.ord; }); }
   var actions=inView.concat(offView);
+  // The nearest ancestor text that isn't just the label itself: which row/item a control is in.
+  function ctxOf(el, lab){
+    for(var p=el&&el.parentElement, g=0; p && g<6 && p.tagName!=='BODY'; p=p.parentElement, g++){
+      var tx=clean(p.innerText,400); if(!tx || tx===lab) continue;
+      var rest=clean(tx.split(lab).join(' '),40); if(rest) return rest;
+    }
+    return '';
+  }
   // Identical labels ("Delete" per row, "Edit" per user) are ambiguous to the agent: tag each with
   // the nearest ancestor text that tells them apart (e.g. the list row it lives in).
   try{
@@ -650,13 +658,7 @@ const SNAPSHOT = `(function(seed){
     for(var u=0;u<actions.length;u++){ var key=actions[u].kind+'|'+actions[u].label; (byLabel[key]=byLabel[key]||[]).push(actions[u]); }
     Object.keys(byLabel).forEach(function(key){
       var grp=byLabel[key]; if(grp.length<2) return;
-      grp.forEach(function(a){
-        var el=cache.nodes.get(a.node), lab=a.label;
-        for(var p=el&&el.parentElement, g=0; p && g<6 && p.tagName!=='BODY'; p=p.parentElement, g++){
-          var tx=clean(p.innerText,400); if(!tx || tx===lab) continue;
-          var rest=clean(tx.split(lab).join(' '),40); if(rest){ a.ctx=rest; break; }
-        }
-      });
+      grp.forEach(function(a){ var cx=ctxOf(cache.nodes.get(a.node), a.label); if(cx) a.ctx=cx; });
     });
   }catch(_){}
   var focus=null;
@@ -669,9 +671,29 @@ const SNAPSHOT = `(function(seed){
   // Guarded so a getter/DOM quirk while building ids can't blank the whole table.
   var focusId=null;
   try{
-    cache.byId={}; cache.guards={}; var used={};
-    for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); if(focus!=null && actions[j].node===focus && !focusId) focusId=id; }
+    cache.byId={}; cache.guards={}; cache.fps={}; var used={};
+    for(var j=0;j<actions.length;j++){ var bid='e'+actions[j].node, id=bid, kk=2; while(used[id]){ id=bid+'_'+kk; kk++; } used[id]=1; actions[j].id=id; cache.byId[id]=actions[j].node; cache.guards[id]=cache.guard(cache.nodes.get(actions[j].node)); cache.fps[id]={label:actions[j].label, ctx:actions[j].ctx||''}; if(focus!=null && actions[j].node===focus && !focusId) focusId=id; }
   }catch(_){}
+  // Resolve a ref to its live element. Frameworks that re-render by REPLACING nodes (innerHTML
+  // templates, keyed lists) orphan every ref; re-find the replacement by the same identity the guard
+  // uses (role + label) plus its row context — only when exactly ONE element matches, never a guess.
+  cache.get=function(id){
+    var node=cache.byId[id]; if(node==null) return null;
+    var e=cache.nodes.get(node); if(e && e.isConnected) return e;
+    var fp=cache.fps && cache.fps[id], want=cache.guards && cache.guards[id]; if(!fp || !want) return null;
+    var cands=collect(), hit=null, n=0;
+    for(var k=0;k<cands.length && n<2;k++){
+      var el=cands[k].el;
+      try{
+        if(!el.isConnected || cache.guard(el)!==want || !cache.surface(el)) continue;
+        if(fp.ctx && ctxOf(el, fp.label)!==fp.ctx) continue;
+        hit=el; n++;
+      }catch(_){}
+    }
+    if(n!==1) return null;
+    cache.byId[id]=identity(hit);
+    return hit;
+  };
   return {url:location.href, title:document.title, scrollY:Math.round(scrollY), scrollH:Math.round(document.documentElement.scrollHeight), omitted:omitted, offMore:offMore, frames:frames.slice(0,10), focus:focusId, next:cache.next, actions:actions};
   }catch(_){ return {url:location.href, title:(document&&document.title)||'', scrollY:0, scrollH:0, omitted:0, actions:[]}; }
 })`;
@@ -787,9 +809,8 @@ async function resolveHit(tabId, ref, opts) {
   const R = JSON.stringify(String(ref));
   return evaluate(tabId, `(function(){
     var c=window.__pawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
-    var node=c.byId[${R}];
-    if(node==null) return {error:'unknown ref (observe again)'};
-    var e=c.nodes.get(node);
+    if(c.byId[${R}]==null) return {error:'unknown ref (observe again)'};
+    var e=c.get?c.get(${R}):null;
     if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
     if(c.guard && c.guards && c.guards[${R}]!=null && c.guard(e)!==c.guards[${R}]) return {error:'element changed since observe (observe again)'};
     if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
@@ -832,7 +853,7 @@ async function setValue(tabId, ref, text) {
   const R = JSON.stringify(String(ref));
   const V = JSON.stringify(String(text ?? ''));
   return evaluate(tabId, `(function(){
-    var c=window.__pawbrowse; var e=c&&c.byId&&c.nodes.get(c.byId[${R}]);
+    var c=window.__pawbrowse; var e=c&&c.get&&c.get(${R});
     if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
     var val=${V};
     var setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
@@ -850,7 +871,7 @@ async function setValue(tabId, ref, text) {
 async function uploadFiles(tabId, ref, paths) {
   const R = JSON.stringify(String(ref));
   const h = await evaluate(tabId, `(function(){
-    var c=window.__pawbrowse; var e=c&&c.byId&&c.nodes.get(c.byId[${R}]);
+    var c=window.__pawbrowse; var e=c&&c.get&&c.get(${R});
     return (e&&e.isConnected&&e.tagName==='INPUT'&&e.type==='file'&&!e.disabled)?e:null;
   })()`, { handle: true });
   if (!h || !h.objectId) return { error: 'not a file-upload field (observe again)' };
@@ -997,7 +1018,7 @@ async function waitForOptions(tabId, ref, ms) {
     await evaluate(tabId, `new Promise(function(res){
       var done=false; function fin(){ if(done) return; done=true; try{clearInterval(iv);}catch(_){} res(1); }
       setTimeout(fin, ${cap});
-      var c=window.__pawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null; var e=node!=null?c.nodes.get(node):null;
+      var c=window.__pawbrowse; var e=(c&&c.get)?c.get(${R}):null;
       if(!e || (e.getAttribute('role')||'').toLowerCase()!=='combobox'){ return fin(); }
       var ids=(e.getAttribute('aria-controls')||e.getAttribute('aria-owns')||'').split(/\\s+/).filter(Boolean);
       var iv=setInterval(function(){
@@ -1073,8 +1094,7 @@ async function runOp(tabId, op) {
       const V = JSON.stringify(String(op.value ?? ''));
       try {
         const res = await evaluate(tabId, `(function(){
-          var c=window.__pawbrowse; var node=(c&&c.byId)?c.byId[${R}]:null;
-          var e=node!=null?c.nodes.get(node):null;
+          var c=window.__pawbrowse; var e=(c&&c.get)?c.get(${R}):null;
           if(!e||!e.isConnected) return 'unknown ref (observe again)';
           if(e.tagName!=='SELECT') return 'not a dropdown';
           if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return 'dropdown is disabled';
@@ -1113,7 +1133,7 @@ async function runOp(tabId, op) {
       try {
         const R = JSON.stringify(String(op.ref || ''));
         const c = await evaluate(tabId, `(function(){
-          var c=window.__pawbrowse, e=${R}&&c&&c.byId&&c.nodes.get(c.byId[${R}]);
+          var c=window.__pawbrowse, e=${R}&&c&&c.get&&c.get(${R});
           if(e&&e.isConnected){ var s=c.surface?c.surface(e):e; if(s){ var r=s.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, w=s.ownerDocument.defaultView;
             while(w&&w.frameElement){ var fr=w.frameElement.getBoundingClientRect(); x+=fr.left+w.frameElement.clientLeft; y+=fr.top+w.frameElement.clientTop; w=w.frameElement.ownerDocument.defaultView; }
             if(x>=0&&y>=0&&x<innerWidth&&y<innerHeight) return [Math.round(x),Math.round(y)]; } }
