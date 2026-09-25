@@ -694,3 +694,23 @@ test('review#10: assert ref_visible works for frame refs', { skip }, async () =>
   const r = await h.cmd('assert', { ref_visible: frameRef(t, `localhost:${h.port}`, 'Cross button') });
   assert.equal(r.pass, true, JSON.stringify(r));
 });
+
+/* ------------------------- found in real-Chrome testing ---------------------- */
+
+test('typing into a rich-text editor keeps its label, so it can be typed into again', { skip }, async () => {
+  const t = await h.goto('widgets.html');
+  const ed = mustRef(t, 'Write a note', 'fill');
+  const r = await h.act({ op: 'type', ref: ed, text: 'first' });
+  assert.match(r, /"Write a note"\s+▸ "first"/, r);
+  const r2 = await h.act({ op: 'type', ref: ed, text: 'second' });
+  assert.doesNotMatch(r2, /changed since observe/, r2);
+  assert.equal(await h.js(`document.getElementById('rte').innerText.trim()`), 'second');
+});
+
+test('an action whose only effect is page text or a dialog reports "page changed"', { skip }, async () => {
+  const t = await h.goto('dialogs.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Ask name'), dialog: 'accept', dialog_text: 'Ada' });
+  assert.match(r, /\[page changed\]/, r.split('\n')[0]);
+  const t2 = await h.goto('tricky.html');
+  assert.match(await h.act({ op: 'click', ref: mustRef(t2, 'Settings') }), /page did NOT change/, 'a dead click still says so');
+});

@@ -470,7 +470,9 @@ const SNAPSHOT = `(function(seed, opts){
     if(['button','submit','reset'].indexOf(e.type)>=0 && e.value) return e.value;
     if(e.getAttribute('alt')) return e.getAttribute('alt');
     // Visible descendants only: display:none / hidden children (tooltips, menus) must not leak in.
-    var txt = (tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA') ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && visible(n) ? name(n,seen) : ''); }).join(' ').trim();
+    // A rich-text editor's text is its VALUE, never its name (else typing into it renames it and
+    // its ref is refused on the next action).
+    var txt = (tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||e.isContentEditable) ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && visible(n) ? name(n,seen) : ''); }).join(' ').trim();
     if(txt) return txt;
     return e.getAttribute('title')||e.getAttribute('placeholder')||e.getAttribute('aria-placeholder')||'';
   }
@@ -859,7 +861,7 @@ function formatTable(snap) {
 // A page signature to detect whether an action actually changed the page. Includes per-input
 // value/checked/selectedIndex so fills, toggles, and selects register as changes (password
 // values excluded).
-const SIG = `JSON.stringify([location.href, document.title, [].map.call(document.querySelectorAll('input,textarea,select'),function(e){return e.type==='password'?'':(String(e.value)+'~'+(e.checked?1:0)+'~'+(e.selectedIndex==null?'':e.selectedIndex));}).join('|'), document.querySelectorAll('a,button,input,select,textarea,summary,[role]').length])`;
+const SIG = `JSON.stringify([location.href, document.title, document.body ? document.body.textContent.length : 0, [].map.call(document.querySelectorAll('input,textarea,select'),function(e){return e.type==='password'?'':(String(e.value)+'~'+(e.checked?1:0)+'~'+(e.selectedIndex==null?'':e.selectedIndex));}).join('|'), document.querySelectorAll('a,button,input,select,textarea,summary,[role]').length])`;
 
 // Retry through transient "document is navigating" states so a snapshot taken
 // during a transition settles instead of failing.
@@ -1905,7 +1907,7 @@ async function handleCommand(cmd, args, token, session) {
         // the caller think they failed and retry them.
         let table;
         try { table = await observe(tabId); } catch { table = null; }
-        const changed = before == null || after == null || before !== after || table == null || seen == null || tableBody(table) !== seen;
+        const changed = before == null || after == null || before !== after || table == null || seen == null || tableBody(table) !== seen || dialogLog.has(tabId);
         const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
         if (table == null) {
           return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n(ops executed; the page is navigating and could not be read yet — call browser_observe next. Do NOT re-run these ops.)`;
