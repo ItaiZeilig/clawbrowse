@@ -26,10 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # NOTE: do NOT set registry-url here. It makes setup-node write an
+      # .npmrc with `always-auth` + an empty NODE_AUTH_TOKEN, which shadows
+      # the OIDC token exchange and makes `npm publish` 404. OIDC trusted
+      # publishing needs no .npmrc and no token.
       - uses: actions/setup-node@v4
         with:
           node-version: 22          # OIDC needs Node >= 22.14.0
-          registry-url: https://registry.npmjs.org
 
       - name: Ensure npm >= 11.5.1 (required for OIDC trusted publishing)
         run: npm install -g npm@latest
