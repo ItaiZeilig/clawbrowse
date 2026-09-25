@@ -610,7 +610,7 @@ const SNAPSHOT = `(function(seed){
     var r=surf.getBoundingClientRect(), lx=r.x+r.width/2, ly=r.y+r.height/2, x=lx+ox, y=ly+oy;
     if(x<0||x>=VW) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||rname), x:Math.round(x), y:Math.round(y)};
+    var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||rname), x:Math.round(x), y:Math.round(y), w:Math.round(r.width), h:Math.round(r.height)};
     var achecked=e.getAttribute('aria-checked');
     if(['checkbox','radio'].indexOf(e.type)>=0) base.checked=!!e.checked;
     else if(achecked!=null) base.checked=(achecked==='true');
@@ -1516,6 +1516,15 @@ async function runOp(tabId, op) {
       const u = await uploadFiles(T, REF, paths);
       return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
     }
+    case 'click_xy': {
+      // Coordinates from the last browser_screenshot image (converted to CSS px).
+      const k = shotScale.get(tabId) || 1;
+      const x = Math.round(Number(op.x) * k), y = Math.round(Number(op.y) * k);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return 'click_xy needs numeric x and y';
+      const button = ['right', 'middle'].includes(op.button) ? op.button : 'left';
+      await clickAt(tabId, x, y, { button, count: op.count });
+      return `click_xy ${op.x},${op.y}`;
+    }
     case 'tool': {
       return invokeTool(tabId, String(op.name || ''), op.input);
     }
@@ -1550,6 +1559,50 @@ async function runOp(tabId, op) {
     default:
       return `unknown op "${op.op}"`;
   }
+}
+
+/* -------------------------------- Screenshots ------------------------------ *
+ * For what the element table can't express — canvas apps (Docs/Sheets/Figma/maps), charts, visual
+ * state. The image is in CSS pixels (so it maps 1:1 to click_xy on any display density), capped at
+ * 1568px on the long side, and, where OffscreenCanvas exists, labelled with the table's refs.     */
+const shotScale = new Map(); // tabId -> CSS px per image px of the last screenshot
+
+async function screenshot(tabId, opts) {
+  const [dpr, vw, vh] = await evaluate(tabId, '[devicePixelRatio, innerWidth, innerHeight]');
+  const { cssVisualViewport: vv } = await sendCdp(tabId, 'Page.getLayoutMetrics');
+  const fit = Math.min(1, 1568 / Math.max(vw, vh));
+  const shot = await sendCdp(tabId, 'Page.captureScreenshot', {
+    format: 'jpeg', quality: 70,
+    clip: { x: vv.pageX, y: vv.pageY, width: vw, height: vh, scale: fit / dpr },
+  });
+  shotScale.set(tabId, 1 / fit);
+  let data = shot.data, marked = 0;
+  if (opts && opts.marks !== false && typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap !== 'undefined') {
+    try {
+      const snap = await snapshot(tabId, 1);
+      const frames = snap ? await readFrames(tabId, tabId, snap, []) : [];
+      // Label at each control's top-left corner (not its centre, which would hide its text).
+      const rows = (snap ? snap.actions.filter((a) => !a.off) : []).map((a) => ({ id: a.id, x: a.x - (a.w || 0) / 2, y: a.y - (a.h || 0) / 2 }));
+      for (const { f, off, snap: fs } of frames) for (const a of fs.actions) if (!a.off) rows.push({ id: `f${f.idx}.${a.id}`, x: a.x - (a.w || 0) / 2 + off.x, y: a.y - (a.h || 0) / 2 + off.y });
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/jpeg' }));
+      const cv = new OffscreenCanvas(bmp.width, bmp.height), g = cv.getContext('2d');
+      g.drawImage(bmp, 0, 0);
+      g.font = 'bold 11px sans-serif'; g.textBaseline = 'top';
+      for (const r of rows) {
+        const w = g.measureText(r.id).width + 4, x = Math.max(0, r.x * fit - 2), y = Math.max(0, r.y * fit - 9);
+        g.fillStyle = 'rgba(220,38,38,.85)'; g.fillRect(x, y, w, 13);
+        g.fillStyle = '#fff'; g.fillText(r.id, x + 2, y + 1);
+        marked++;
+      }
+      const out = await cv.convertToBlob({ type: 'image/jpeg', quality: 0.7 });
+      const buf = new Uint8Array(await out.arrayBuffer());
+      let bin = ''; for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+      data = btoa(bin);
+    } catch { /* unlabelled screenshot is still useful */ }
+  }
+  const w = Math.round(vw * fit), h = Math.round(vh * fit);
+  return { data, mimeType: 'image/jpeg', width: w, height: h, note: `screenshot ${w}x${h} of the visible viewport${marked ? `, ${marked} controls labelled with their refs` : ''}. For things not in the element table (canvas apps, maps, charts), act with {op:"click_xy",x,y} using THIS image's pixel coordinates.` };
 }
 
 /* ------------------------------ Command router ---------------------------- */
@@ -1657,6 +1710,12 @@ async function handleCommand(cmd, args, token, session) {
         }
         return `ran ${ops.length} op(s) [${note}]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}\n${table}`;
       });
+    }
+    case 'screenshot': {
+      const tabId = await resolveTabId(session, args, 'inspect');
+      await attach(tabId);
+      assertNoOpenDialog(tabId);
+      return screenshot(tabId, args);
     }
     case 'assert': {
       const tabId = await resolveTabId(session, args, 'inspect');

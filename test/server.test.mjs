@@ -14,7 +14,7 @@ import {
   rawHandshake, maskedFrame, waitClosed, brokerSock,
 } from './helpers.mjs';
 
-const READONLY = ['browser_status', 'browser_tabs', 'browser_observe', 'browser_read', 'browser_assert'];
+const READONLY = ['browser_status', 'browser_tabs', 'browser_observe', 'browser_read', 'browser_assert', 'browser_screenshot'];
 const WRITE = ['browser_navigate', 'browser_act'];
 
 /* ------------------------------- MCP protocol ------------------------------ */
@@ -32,14 +32,14 @@ test('initialize returns pawbrowse serverInfo and echoes protocolVersion', async
   } finally { srv.kill(); }
 });
 
-test('tools/list returns 7 tools with valid annotations and correct hints', async () => {
+test('tools/list returns 8 tools with valid annotations and correct hints', async () => {
   const port = await freePort();
   const srv = startServer({ PAWBROWSE_PORT: String(port) });
   try {
     await initialize(srv);
     srv.rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
     const tools = (await srv.waitFor(2)).result.tools;
-    assert.equal(tools.length, 7);
+    assert.equal(tools.length, 8);
     for (const t of tools) {
       assert.ok(t.name && t.description && t.inputSchema, `${t.name} has core fields`);
       assert.equal(t.inputSchema.type, 'object');
@@ -148,6 +148,20 @@ test('observe round-trips through the extension', async () => {
     const r = await srv.waitFor(10);
     assert.equal(r.result.content[0].text, 'FAKE observe');
     assert.ok(ext.received.some((m) => m.cmd === 'observe'));
+  } finally { ext.close(); srv.kill(); }
+});
+
+test('browser_screenshot returns an MCP image block plus its note', async () => {
+  const port = await freePort();
+  const srv = startServer({ PAWBROWSE_PORT: String(port) });
+  const ext = fakeExtension(port, (m) => ({ result: m.cmd === 'screenshot' ? { data: 'AAAA', mimeType: 'image/jpeg', width: 10, height: 5, note: 'screenshot 10x5' } : null }));
+  try {
+    await ext.ready; await sleep(50);
+    await initialize(srv);
+    srv.rpc({ jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'browser_screenshot', arguments: {} } });
+    const r = await srv.waitFor(11);
+    assert.deepEqual(r.result.content[0], { type: 'image', data: 'AAAA', mimeType: 'image/jpeg' });
+    assert.equal(r.result.content[1].text, 'screenshot 10x5');
   } finally { ext.close(); srv.kill(); }
 });
 
@@ -303,7 +317,7 @@ test('invalid env vars fall back to defaults instead of breaking the server', as
     assert.equal(r.serverInfo.name, 'pawbrowse');
     // and tools still list
     srv.rpc({ jsonrpc: '2.0', id: 60, method: 'tools/list' });
-    assert.equal((await srv.waitFor(60)).result.tools.length, 7);
+    assert.equal((await srv.waitFor(60)).result.tools.length, 8);
   } finally { srv.kill(); }
 });
 

@@ -543,3 +543,19 @@ test('WebMCP: page tools (imperative + declarative) are listed and callable', { 
     assert.doesNotMatch(t2, /page tools/, 'tools must not leak to the next page');
   } finally { await w.close(); }
 });
+
+/* ------------------------- screenshots & canvas apps ------------------------ */
+
+test('screenshot is in CSS pixels even on a 2x display, and click_xy hits a canvas-drawn button', { skip }, async () => {
+  const w = await launch({ args: ['--force-device-scale-factor=2'] });
+  try {
+    await w.goto('canvas.html');
+    const shot = await w.cmd('screenshot', {});
+    const [vw, vh] = await w.js('[innerWidth, innerHeight]');
+    assert.equal(shot.width, vw); assert.equal(shot.height, vh);
+    assert.ok(shot.data.length > 1000 && shot.mimeType === 'image/jpeg');
+    // canvas content box starts at (21,21): margin 20 + border 1; "Approve" spans x 250..350, y 120..160.
+    await w.act({ op: 'click_xy', x: 21 + 300, y: 21 + 140 });
+    assert.equal(await w.js(`document.getElementById('out').textContent`), 'approved');
+  } finally { await w.close(); }
+});
