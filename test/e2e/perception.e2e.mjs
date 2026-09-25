@@ -332,3 +332,42 @@ test('a select whose change navigates is applied exactly once and reported hones
   assert.doesNotMatch(r, /unknown ref|option not found/, r);
   assert.match(r, /Tricky/);
 });
+
+/* ------------------------------- waiting (settle) ---------------------------- */
+
+for (const q of ['', '?clock']) {
+  const tag = q ? ' (page with a ticking clock)' : '';
+  test(`a click that fetches returns the fetched results, not a stale table${tag}`, { skip }, async () => {
+    const t = await h.goto('async.html' + q);
+    const r = await h.act({ op: 'click', ref: mustRef(t, 'Load results') });
+    mustRef(r, 'Lyon');
+  });
+  test(`typing into a debounced search returns its results${tag}`, { skip }, async () => {
+    const t = await h.goto('async.html' + q);
+    const r = await h.act({ op: 'type', ref: mustRef(t, 'Search'), text: 'Ly' });
+    mustRef(r, 'Lyon');
+    assert.equal(ref(r, 'London'), null, 'results must be the filtered ones');
+  });
+  test(`a click that does nothing returns fast${tag}`, { skip }, async () => {
+    const t = await h.goto('async.html' + q);
+    const t0 = performance.now();
+    await h.act({ op: 'click', ref: mustRef(t, 'Search') });
+    const ms = performance.now() - t0;
+    assert.ok(ms < (q ? 400 : 150), `took ${ms.toFixed(0)}ms`);
+  });
+}
+
+test('a link to a slow page returns the NEW page', { skip }, async () => {
+  const t = await h.goto('async.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Slow page') });
+  mustRef(r, 'Slow page button');
+});
+
+test('navigate waits for a slow page, returns fast for a fast one, and reports network errors', { skip }, async () => {
+  const t = await h.goto('slow.html?delay=900');
+  mustRef(t, 'Slow page button');
+  const t0 = performance.now();
+  await h.goto('widgets.html');
+  assert.ok(performance.now() - t0 < 300, `fast navigate took ${(performance.now() - t0).toFixed(0)}ms`);
+  await assert.rejects(h.goto('http://127.0.0.1:1/'), /navigation failed: net::ERR_/);
+});

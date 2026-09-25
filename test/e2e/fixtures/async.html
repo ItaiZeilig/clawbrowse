@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Async</title></head><body>
+<button onclick="load()">Load results</button>
+<label>Search <input id="q" oninput="debounced()"></label>
+<a href="slow.html?delay=900">Slow page</a>
+<button onclick="setTimeout(()=>o('late 600'),600)">Delayed render</button>
+<span id="clock"></span>
+<ul id="res"></ul><p id="out"></p>
+<script>
+ function o(s){document.getElementById('out').textContent=s}
+ async function load(){ const r=await fetch('data.json?delay=700'); const d=await r.json(); document.getElementById('res').innerHTML=d.map(x=>'<li><button>'+x+'</button></li>').join(''); o('loaded'); }
+ let t; function debounced(){ clearTimeout(t); t=setTimeout(async()=>{ const r=await fetch('data.json?delay=300'); const d=await r.json(); const q=document.getElementById('q').value.toLowerCase(); document.getElementById('res').innerHTML=d.filter(x=>x.toLowerCase().startsWith(q)).map(x=>'<li><button>'+x+'</button></li>').join(''); },250); }
+ if (location.search.includes('clock')) setInterval(()=>document.getElementById('clock').textContent=Date.now(),50);
+</script></body></html>

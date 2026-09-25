@@ -225,6 +225,9 @@ async function attach(tabId) {
   await sendCdp(tabId, 'Runtime.enable', {}).catch(() => {});
   await sendCdp(tabId, 'Page.enable', {}).catch(() => {});
   await sendCdp(tabId, 'DOM.enable', {}).catch(() => {});
+  // Network events (no bodies buffered) let waits follow the page's real fetch/XHR activity.
+  await sendCdp(tabId, 'Network.enable', { maxTotalBufferSize: 0, maxResourceBufferSize: 0 }).catch(() => {});
+  try { const { frameTree } = await sendCdp(tabId, 'Page.getFrameTree'); tabWatch(tabId).mainFrame = frameTree.frame.id; } catch {}
   // Make the tab behave as focused even when it's a background tab, so focus/blur, rendering,
   // and focus-dependent menus/dropdowns work while driving (the same approach Playwright uses for
   // backgrounded pages). A hidden tab still throttles requestAnimationFrame, so our waits use
@@ -285,6 +288,7 @@ function assertNoOpenDialog(tabId) {
 // keep pointing at a dead tab.
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
+  watches.delete(tabId);
   openDialogs.delete(tabId); acting.delete(tabId); dialogLog.delete(tabId); lastTable.delete(tabId);
   worlds.delete(tabId);
   refSeed.delete(tabId);
@@ -381,6 +385,14 @@ async function endSession(session) {
  * action re-resolves the exact element it was chosen from.
  * -------------------------------------------------------------------------- */
 
+// DOM activity tracker, kept apart from the ref cache (window.__pawbrowse) so creating it can't
+// reset ref numbering. Installed by the first snapshot or wait in each document; shadow roots are
+// added as the snapshot discovers them. Keeps recent mutation times so a wait can tell "this page
+// is always animating" (don't wait for quiet that never comes) from "the action changed things".
+const MO_INSTALL = `var M=window.__pawmo; if(!M){ M=window.__pawmo={last:performance.now(),times:[],roots:new WeakSet()};
+  M.mo=new MutationObserver(function(){ var t=performance.now(); M.last=t; M.times.push(t); if(M.times.length>64) M.times.shift(); });
+  M.watch=function(r){ if(!M.roots.has(r)){ M.roots.add(r); try{ M.mo.observe(r,{subtree:true,childList:true,attributes:true,characterData:true}); }catch(_){} } };
+  M.watch(document); }`;
 const SNAPSHOT = `(function(seed){
   try{
   if(!document.body) return null;
@@ -389,6 +401,7 @@ const SNAPSHOT = `(function(seed){
   var cache = window.__pawbrowse || (window.__pawbrowse = {ids:new WeakMap(), nodes:new Map(), next:Math.max(1,seed|0), byId:{}});
   function identity(e){ if(!cache.ids.has(e)) cache.ids.set(e, cache.next++); var id=cache.ids.get(e); cache.nodes.set(id,e); return id; }
   cache.nodes.forEach(function(e,id){ if(!e.isConnected) cache.nodes.delete(id); });
+  ${MO_INSTALL}
   function safe(e){ return ['password','hidden'].indexOf(e.type)<0; }
   // display:contents boxes (every <slot>, many design-system wrappers) have no box of their own, so
   // checkVisibility() says false even though their children render: judge those by their parent.
@@ -517,7 +530,7 @@ const SNAPSHOT = `(function(seed){
             }
           }catch(_){}
         }
-        if(n.shadowRoot) walk(n.shadowRoot, dx, dy, depth+1);
+        if(n.shadowRoot){ M.watch(n.shadowRoot); walk(n.shadowRoot, dx, dy, depth+1); }
         if(n.tagName==='IFRAME' || n.tagName==='FRAME'){
           var idoc=null; try{ idoc=n.contentDocument; }catch(_){}
           if(idoc && idoc.body){
@@ -892,11 +905,85 @@ async function clickAt(tabId, x, y) {
   await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
 }
 
-// Wait for the page to settle: two animation frames, or up to ms, whichever first.
-async function settle(tabId, ms) {
-  try {
-    await evaluate(tabId, `new Promise(function(res){var f=0;function step(){if(++f>=2)return res(1);requestAnimationFrame(step);}requestAnimationFrame(step);setTimeout(function(){res(1);}, ${Number(ms) || 300});})`);
-  } catch { await sleep(Number(ms) || 300); }
+/* ------------------------------ Waiting (settle) ---------------------------- *
+ * Wait for what the page is ACTUALLY doing instead of a fixed delay: a navigation in progress (until
+ * the new document's DOMContentLoaded), fetch/XHR requests started by the action, then a short
+ * DOM-quiet window (MutationObserver). Each phase is capped, so long-polling, analytics beacons or a
+ * ticking clock can't stall us, and a click that does nothing returns in a few tens of ms.        */
+const watches = new Map(); // tabId -> { mainFrame, inflight: Map(reqId -> startedAt), navStart, navDone }
+function tabWatch(tabId) {
+  let w = watches.get(tabId);
+  if (!w) { w = { mainFrame: null, inflight: new Map(), navStart: 0, navDone: 0 }; watches.set(tabId, w); }
+  return w;
+}
+const TRACKED = new Set(['Fetch', 'XHR', 'Document']);
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (source.tabId == null || source.sessionId) return; // top-level target only
+  const w = watches.get(source.tabId);
+  if (!w) return;
+  const now = Date.now();
+  switch (method) {
+    case 'Network.requestWillBeSent':
+      if (TRACKED.has(params.type)) w.inflight.set(params.requestId, now);
+      if (params.type === 'Document' && params.frameId === w.mainFrame && params.requestId === params.loaderId) { w.navStart = now; w.navDone = 0; }
+      break;
+    case 'Network.loadingFinished': case 'Network.loadingFailed':
+      w.inflight.delete(params.requestId);
+      break;
+    case 'Page.frameRequestedNavigation': case 'Page.frameStartedNavigating':
+      if (params.frameId === w.mainFrame && !(params.navigationType === 'sameDocument')) { w.navStart = now; w.navDone = 0; }
+      break;
+    case 'Page.frameNavigated':
+      if (!params.frame.parentId) w.mainFrame = params.frame.id;
+      break;
+    case 'Page.domContentEventFired': case 'Page.loadEventFired': case 'Page.downloadWillBegin':
+      w.navDone = now;
+      break;
+    case 'Page.frameStoppedLoading':
+      if (params.frameId === w.mainFrame) w.navDone = now; // incl. cancelled navigations / 204s
+      break;
+  }
+});
+
+// -> [ms since last DOM change, was the DOM already busy in the 600ms before `since` (epoch ms)?]
+const quietExpr = (since) => `(function(){ ${MO_INSTALL}
+  var now=performance.now(), s=${Number(since) || 0}-Date.now()+now, b={};
+  M.times.forEach(function(t){ if(t<s && t>=s-600) b[Math.floor((s-t)/100)]=1; });
+  return [now-M.last, Object.keys(b).length>=4];
+})()`;
+
+async function settle(tabId, capMs, since, opts) {
+  const start = since || Date.now();
+  const w = tabWatch(tabId);
+  const deadline = start + (capMs || 3000);
+  // After typing, search boxes commonly DEBOUNCE (wait ~150-300ms of no typing, then fetch): there's
+  // no signal to follow during that gap, so give a typed field a grace window for a request or a
+  // re-render to begin before calling it idle.
+  const grace = start + ((opts && opts.grace) || 0);
+  // Let the action's handlers run first (event loop turn + a frame).
+  await sleep(25);
+  let idleSince = 0;
+  for (;;) {
+    const now = Date.now();
+    const navigating = w.navStart >= start - 50 && w.navDone < w.navStart;
+    // A navigation gets a longer allowance: the next page must actually arrive.
+    if (now > (navigating ? Math.max(deadline, start + 10000) : deadline)) break;
+    if (navigating) { await sleep(30); continue; }
+    let busy = false;
+    for (const [id, t] of w.inflight) {
+      if (now - t > 15000) { w.inflight.delete(id); continue; } // leaked/long-poll: forget it
+      if (t >= start - 50 && now - t < 4000) busy = true;         // started by this action, still young
+    }
+    if (busy) { idleSince = 0; await sleep(30); continue; }
+    if (now < grace) { await sleep(30); continue; } // debounce window: a request may still be coming
+    if (!idleSince) idleSince = now;
+    let quiet = 1e9, ambient = false;
+    try { [quiet, ambient] = await evaluate(tabId, quietExpr(start)); } catch { await sleep(30); continue; } // document swapping
+    // DOM still changing: wait for 60ms of quiet, capped at 600ms after the network went idle, or
+    // 120ms on a page that was already constantly mutating (clocks, tickers, carousels) before us.
+    if (quiet < 60 && now - idleSince < (ambient ? 120 : 600)) { await sleep(Math.max(10, 60 - quiet)); continue; }
+    break;
+  }
 }
 
 // After typing into a combobox, wait for its autocomplete options to actually render
@@ -1080,16 +1167,14 @@ async function handleCommand(cmd, args, token, session) {
       if (!/^https?:\/\//i.test(url)) throw new Error(`navigate only supports http(s) URLs (refusing "${url.split(':')[0]}:")`);
       await attach(tabId);
       return whileActing(tabId, async () => {
-      await sendCdp(tabId, 'Page.navigate', { url });
+      const t0 = Date.now();
+      const w = tabWatch(tabId);
+      w.navStart = t0; w.navDone = 0; // mark before navigating: the old document must not count as "arrived"
+      const nav = await sendCdp(tabId, 'Page.navigate', { url });
       worlds.delete(tabId); // the old document's world is going away with it
-      await sleep(350); // let the new document commit before polling, so we don't read the old page
-      for (let i = 0; i < 75; i++) {
-        if (aborted()) break;
-        const rs = await evaluate(tabId, 'document.readyState').catch(() => null);
-        if (rs === 'complete') break;
-        await sleep(200);
-      }
-      await settle(tabId, 400);
+      if (nav && nav.errorText) throw new Error(`navigation failed: ${nav.errorText}`);
+      if (nav && !nav.loaderId) w.navDone = Date.now(); // same-document (fragment) navigation
+      await settle(tabId, 5000, t0);
       const dl = takeDialogLog(tabId);
       return (dl ? dl + '\n' : '') + await observe(tabId);
       });
@@ -1123,11 +1208,11 @@ async function handleCommand(cmd, args, token, session) {
         for (; i < ops.length; i++) {
           const op = ops[i];
           if (aborted()) { logLines.push('  (aborted: command timed out; remaining ops not run)'); break; }
+          const t0 = Date.now();
           try { logLines.push('  ' + await runOp(tabId, op)); }
           catch (e) { logLines.push(`  ${op.op} ${op.ref || ''}: ERROR ${e.message}`); }
-          await settle(tabId, 250);
+          if (op.op !== 'wait') await settle(tabId, i === ops.length - 1 ? 4000 : 2500, t0, { grace: op.op === 'type' ? 400 : 0 });
         }
-        await settle(tabId, 450);
         const after = await evaluate(tabId, SIG).catch(() => null);
         const seen = lastTable.get(tabId);
         // The ops already executed; a failed post-action read (page navigating) must NOT make
