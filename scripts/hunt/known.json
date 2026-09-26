@@ -1,0 +1,6 @@
+[
+  { "site": "gov.uk/", "oracle": "covered", "row": "Skip to main content",
+    "why": "Skip link, intentionally hidden under the navigation until it receives keyboard focus: correctly reported as covered." },
+  { "site": "mui.com/material-ui/react-select/", "oracle": "covered", "row": "A generic container that is programmatically focused",
+    "why": "MUI docs' keyboard-test helper element; the Select demo really renders on top of it: correctly reported as covered." }
+]

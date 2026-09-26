@@ -170,9 +170,13 @@ try {
 
 // Summary (markdown, also for the GitHub job summary) and exit code: any oracle finding fails the
 // run so it gets noticed; sites that couldn't be reached (network, bot walls) are listed, not failed.
-const real = report.flatMap((e) => e.findings.filter((f) => f.oracle !== 'error').map((f) => ({ url: e.url, ...f })));
+// Verified true positives (each with a reason) don't fail the run; anything new does.
+const known = JSON.parse(fs.readFileSync(new URL('./known.json', import.meta.url), 'utf8'));
+const isKnown = (url, f) => known.some((k) => url.includes(k.site) && f.oracle === k.oracle && String(f.row || '').includes(k.row));
+const real = report.flatMap((e) => e.findings.filter((f) => f.oracle !== 'error' && !isKnown(e.url, f)).map((f) => ({ url: e.url, ...f })));
+const baselined = report.reduce((n, e) => n + e.findings.filter((f) => isKnown(e.url, f)).length, 0);
 const unreachable = report.filter((e) => e.findings.some((f) => f.oracle === 'error'));
-const md = [`## PawBrowse bug hunt — ${report.length} sites, ${real.length} finding(s)`, ''];
+const md = [`## PawBrowse bug hunt — ${report.length} sites, ${real.length} new finding(s)${baselined ? ` (${baselined} known, see scripts/hunt/known.json)` : ''}`, ''];
 if (real.length) {
   md.push('| site | oracle | row | detail |', '|---|---|---|---|');
   for (const f of real) md.push(`| ${f.url.replace(/^https:\/\//, '').slice(0, 50)} | ${f.oracle} | ${String(f.row || '').replace(/\|/g, '/').slice(0, 60)} | ${String(f.detail || '').replace(/\|/g, '/').replace(/\n/g, ' ').slice(0, 120)} |`);
