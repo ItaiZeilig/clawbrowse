@@ -1365,7 +1365,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 const quietExpr = (since) => `(function(){ ${MO_INSTALL}
   var now=performance.now(), s=${Number(since) || 0}-Date.now()+now, b={};
   M.times.forEach(function(t){ if(t<s && t>=s-600) b[Math.floor((s-t)/100)]=1; });
-  return [now-M.last, Object.keys(b).length>=4];
+  // Finite CSS transitions/animations still running (a menu fading in, a panel sliding open):
+  // until they finish, their contents may still be invisible. Infinite ones (spinners) don't count.
+  var anim=0;
+  try{ document.getAnimations().forEach(function(a){ if(a.playState==='running' && a.effect){ var ct=a.effect.getComputedTiming(); if(isFinite(ct.endTime) && ct.endTime<=2000) anim++; } }); }catch(_){}
+  return [anim ? 0 : now-M.last, Object.keys(b).length>=4];
 })()`;
 
 // Network tracking only while an action is being watched (see attach()).

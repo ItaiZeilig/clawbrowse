@@ -1,0 +1,5 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Fade</title>
+<style>#menu{opacity:0;transition:opacity .2s .15s} #menu.open{opacity:1;visibility:visible}</style></head><body>
+<button aria-expanded="false" onclick="this.setAttribute('aria-expanded','true');document.getElementById('menu').classList.add('open')">Ticket type</button>
+<ul id="menu" role="listbox"><li role="option" onclick="o('one way')">One way</li><li role="option">Multi-city</li></ul>
+<p id="out"></p><script>function o(s){document.getElementById('out').textContent=s}</script></body></html>

@@ -102,6 +102,11 @@ try {
     t = await h.observe();
     r = await act('Search', t, /^Search$/, { op: 'click' });
   });
+  await step('Open cheapest', async () => {
+    // The "Cheapest" tab's price is in the table: open the first nonstop result at that price.
+    const cheapest = (r.match(/Cheapest from (\d+) US dollars/) || [])[1];
+    r = await act('Open cheapest', r, new RegExp(`^From ${cheapest || '\\d+'} US dollars.*Nonstop flight`), { op: 'click' });
+  });
   state.elapsed_ms = now();
   await new Promise((z) => setTimeout(z, 600)); // a few frames of the result
   await h.cdp('Page.stopScreencast', {});
@@ -111,13 +116,13 @@ try {
   const text = page.slice(page.indexOf('visible text'));
   const url = await h.js('location.href');
   const checks = {
-    results_page: /\/travel\/flights\/search/.test(url),
-    route: /^Zürich to London \| Google Flights/.test(page),
+    booking_page: /\/travel\/flights\/booking/.test(url),
+    route: /Zürich|Zurich/.test(page) && /London/.test(page),
     from_field: /"Where from\?"\s+▸ "Zürich"/.test(page),
     to_field: /"Where to\?"\s+▸ "London"/.test(page),
     one_way: /"Change ticket type\. One way"/.test(page),
     date: new RegExp(`"Departure"\\s+▸ "${DATE_LABEL}"`).test(page),
-    flights_listed: /\d+ results returned/.test(text) && /\$\d+/.test(text),
+    booking_options: /Booking options|Select flight|Book with/i.test(text),
   };
   state.verification = { url, checks, passed: Object.values(checks).every(Boolean) };
   fs.writeFileSync(path.join(out, 'final-table.txt'), page);

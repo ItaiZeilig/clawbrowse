@@ -732,3 +732,10 @@ test('a link rendered UNDER its own row content (Google results) is clickable; u
   assert.match(r, /covered/);
   assert.equal(await out(), 'opened easyJet', 'the promo button was not clicked');
 });
+
+test('a menu that fades in (CSS transition) is listed in the click result, not missed mid-fade', { skip }, async () => {
+  const t = await h.goto('fade.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Ticket type') });
+  await h.act({ op: 'click', ref: mustRef(r, 'One way') });
+  assert.equal(await out(), 'one way');
+});
