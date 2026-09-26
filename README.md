@@ -19,6 +19,16 @@
 <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-blue.svg" alt="MCP"></a>
 </p>
 
+<p align="center">
+  <a href="assets/demo.mp4"><img src="assets/demo.gif" alt="A real Google Flights run at 1× speed: Zürich to London, the cheapest nonstop flight opened in 6.8 seconds, each targeted element highlighted with its ref" width="100%"></a>
+</p>
+
+<p align="center"><sub>
+A real run on live Google Flights at <b>1× speed</b> — every frame is the original screencast, the result is verified from the page itself.
+The plan is scripted, so this is PawBrowse's browser time only; your agent's thinking time comes on top.
+<a href="assets/demo.mp4">MP4</a> · reproduce with <code>node scripts/demo/record.mjs rec && python3 scripts/demo/render.py rec</code>
+</sub></p>
+
 PawBrowse is a **Chrome MV3 extension + a tiny zero-dependency MCP server** that lets your local
 AI coding agent (like **Claude Code**) read and act on your **actual, logged-in browser tabs** —
 your profile, your sessions, your open pages — with **no remote-debug port, no browser relaunch,

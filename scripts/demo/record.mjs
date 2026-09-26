@@ -117,12 +117,11 @@ try {
   const url = await h.js('location.href');
   const checks = {
     booking_page: /\/travel\/flights\/booking/.test(url),
-    route: /Zürich|Zurich/.test(page) && /London/.test(page),
-    from_field: /"Where from\?"\s+▸ "Zürich"/.test(page),
-    to_field: /"Where to\?"\s+▸ "London"/.test(page),
-    one_way: /"Change ticket type\. One way"/.test(page),
-    date: new RegExp(`"Departure"\\s+▸ "${DATE_LABEL}"`).test(page),
-    booking_options: /Booking options|Select flight|Book with/i.test(text),
+    route: /Zürich London \$\d+/.test(text),
+    one_way: /One way Economy 1 passenger/.test(text),
+    date: new RegExp(DATE_LABEL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(text),
+    nonstop: /Nonstop/.test(text),
+    booking_options: /Booking options/.test(text),
   };
   state.verification = { url, checks, passed: Object.values(checks).every(Boolean) };
   fs.writeFileSync(path.join(out, 'final-table.txt'), page);
