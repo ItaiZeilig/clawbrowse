@@ -533,13 +533,32 @@ const SNAPSHOT = `(function(seed, opts){
   }
   // Hit-test a frame-local point in the element's own root, descending into nested open shadow
   // roots, so a covered control (overlay, modal backdrop, pointer-events:none) is flagged.
+  // Is f (what is actually under the pointer) just the target's own visible content? Common
+  // pattern (Google results, cards): the accessible element sits UNDER a sibling that renders the
+  // row. Clicking there is what a person does. Not so for an empty overlay, a modal/fixed layer, a
+  // different control, or an ancestor of the target.
+  cache.sameWidget=function(t, f){
+    try{
+      if(!f || f===t || f.contains(t)) return false;
+      var p=t.parentElement, d=0; while(p && d<2 && !p.contains(f)){ p=p.parentElement; d++; }
+      if(!p || !p.contains(f) || p.tagName==='BODY' || p.tagName==='HTML') return false;
+      for(var a=f; a && a!==p; a=a.parentElement){
+        var cs=a.ownerDocument.defaultView.getComputedStyle(a);
+        if(cs.position==='fixed' || cs.position==='sticky') return false;
+        if(a.matches('a[href],button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=menuitem],[role=option],[role=tab]')) return false;
+      }
+      // A layer that CONTAINS other controls (a promo with its own button) is a different widget.
+      if(f.querySelector('a[href],button,input,select,textarea,[role=button],[role=link],[role=checkbox],[role=menuitem],[role=option],[role=tab]')) return false;
+      return !!((f.innerText||'').trim() || f.querySelector('img,svg') || /^(IMG|SVG)$/i.test(f.tagName));
+    }catch(_){ return false; }
+  };
   cache.hits=function(t, lx, ly){
     try{
       if(lx==null){ var hr=t.getBoundingClientRect(); lx=hr.x+hr.width/2; ly=hr.y+hr.height/2; }
       var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
       var f=root.elementFromPoint(lx,ly), g=0;
       while(f && sroot(f) && g++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
-      return !!f && (t===f || t.contains(f) || (t.control && t.control===f));
+      return !!f && (t===f || t.contains(f) || (t.control && t.control===f) || cache.sameWidget(t, f));
     }catch(_){ return true; }
   };
   var hits=cache.hits;
@@ -1167,7 +1186,7 @@ async function resolveHit(tabId, ref, opts) {
       var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
       var f=root.elementFromPoint(lx,ly), k=0;
       while(f && sroot(f) && k++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
-      var hit=!!f && (s===f || s.contains(f) || (s.control && s.control===f));
+      var hit=!!f && (s===f || s.contains(f) || (s.control && s.control===f) || (c.sameWidget && c.sameWidget(s, f)));
       return {x:x, y:y, inView:inView && x>=0 && y>=0 && x<innerWidth && y<innerHeight, hit:hit};
     };
     // Don't move the page when the target is already on screen and hittable: needless scrolling

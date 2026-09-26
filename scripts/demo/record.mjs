@@ -33,25 +33,43 @@ h.onEvent((method, p) => {
   state.frames.push({ file: f, ms });
 });
 
+// Where the target is on screen (CSS px of the viewport) — drawn as the highlight in the video.
+const targetRect = (r) => h.ev(`(function(){ var c=window.__pawbrowse, e=c&&c.get(${JSON.stringify(r)}); var s=e&&(c.surface?c.surface(e):e); if(!s) return null; var q=s.getBoundingClientRect(); return [q.x,q.y,q.width,q.height].map(Math.round); })()`).catch(() => null);
+// The rows that are NEW in `res` compared with `before` (ignoring ref numbers): what the action
+// revealed or changed — suggestions appearing, a checkbox flipping, results arriving.
+const body = (l) => l.replace(/^(f\d+\.)?e\d+(_\d+)?\s+/, '').replace(/\s+/g, ' ');
+const seenRows = new Set(); // every row the agent has been shown so far in this run
+function newRows(before, res) {
+  for (const l of String(before).split('\n')) seenRows.add(body(l));
+  const fresh = res.split('\n').filter((l) => /^(f\d+\.)?e\d/.test(l) && !/[↕↓↑]/.test(l) && !seenRows.has(body(l)));
+  for (const l of res.split('\n')) seenRows.add(body(l));
+  fresh.sort((a, b) => /\$\d/.test(b) - /\$\d/.test(a)); // prices first: results are the interesting part
+  return fresh.slice(0, 5).map((l) => l.replace(/\s+/g, ' ').slice(0, 58));
+}
 const lineOf = (t, r) => String(t).split('\n').find((l) => l.startsWith(`${r} `)) || '';
 async function act(step, table, label, op, kind) {
   const r = ref(table, label, kind);
   if (!r) throw new Error(`step "${step}": no row ${label} in:\n${table}`);
   const shown = lineOf(table, r).replace(/\s+/g, ' ').slice(0, 70);
+  const rect = await targetRect(r);
   const start = now();
   const res = await h.act({ ...op, ref: r });
   fs.writeFileSync(path.join(out, `action-${String(state.actions.length + 1).padStart(2, '0')}.txt`), res); // what the agent got back
   const rows = res.split('\n').filter((l) => /^(f\d+\.)?e\d/.test(l)).length;
-  state.actions.push({ step, start, end: now(), op: op.op, ref: r, row: shown, text: op.text || null, rows, delta: /only changes shown/.test(res), changed: /\[page changed\]/.test(res) });
+  const preview = newRows(table, res);
+  state.actions.push({ step, start, end: now(), op: op.op, ref: r, row: shown, text: op.text || null, rect, rows, preview, delta: /only changes shown/.test(res), changed: /\[page changed\]/.test(res) });
   return res;
 }
 
 try {
   const first = await h.goto('https://www.google.com/travel/flights?hl=en&gl=US&curr=USD');
+  newRows(first, '');
   await h.cdp('Page.startScreencast', { format: 'jpeg', quality: 85, everyNthFrame: 1 });
   await new Promise((r) => setTimeout(r, 400));
   const shot = await h.cdp('Page.captureScreenshot', { format: 'jpeg', quality: 85 });
   fs.writeFileSync(path.join(out, 'frames', 'start.jpg'), Buffer.from(shot.data, 'base64'));
+  state.viewport = await h.js('[innerWidth, innerHeight]');
+  state.version = JSON.parse(fs.readFileSync(new URL('../../extension/manifest.json', import.meta.url))).version;
   t0 = Date.now(); // the clock starts at the first action (page load excluded, as in jev's demo)
   let t = first, r;
   const step = async (name, fn) => { const s = now(); await fn(); state.steps.push({ name, start: s, end: now() }); };
@@ -74,10 +92,11 @@ try {
     t = await h.observe();
     r = await act(DATE_LABEL, t, 'Departure', { op: 'click' }, 'fill');
     t = await h.observe();
-    const s = now();
     // Type the date and close the picker with Escape (keeps the date; Google's "Done" is flaky under automation).
-    r = await h.act({ op: 'type', ref: ref(t, 'Departure', 'fill'), text: DATE_LABEL }, { op: 'key', key: 'Enter' }, { op: 'key', key: 'Escape' });
-    state.actions.push({ step: DATE_LABEL, start: s, end: now(), op: 'type', ref: ref(t, 'Departure', 'fill'), row: 'fill "Departure"', text: `${DATE_LABEL} ⏎ Esc`, rows: 0, changed: true });
+    const dep = ref(t, 'Departure', 'fill'), rect = await targetRect(dep), s = now();
+    r = await h.act({ op: 'type', ref: dep, text: DATE_LABEL }, { op: 'key', key: 'Enter' }, { op: 'key', key: 'Escape' });
+    const preview = newRows(t, r);
+    state.actions.push({ step: DATE_LABEL, start: s, end: now(), op: 'type', ref: dep, row: 'fill "Departure"', text: `${DATE_LABEL} ⏎ Esc`, rect, rows: 0, preview, changed: true });
   });
   await step('Search', async () => {
     t = await h.observe();

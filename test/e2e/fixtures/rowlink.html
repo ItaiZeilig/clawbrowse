@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Rows</title>
+<style>.row{position:relative;height:60px;border:1px solid #ccc;margin:6px;width:500px}
+ .hit{position:absolute;inset:0} .content{position:absolute;inset:0;padding:10px;display:flex;gap:20px}
+ .promo{position:absolute;inset:0;background:#fff}</style></head><body>
+<!-- Google-results pattern: the accessible link sits UNDER a sibling that renders the row -->
+<div class="row" onclick="o('opened easyJet')"><div class="hit" role="link" tabindex="0" aria-label="From 55 US dollars. Nonstop flight with easyJet."></div>
+ <div class="content"><span>11:10 AM – 11:55 AM</span><span>easyJet</span><span>$55</span></div></div>
+<!-- ...but a DIFFERENT control on top still covers it -->
+<div class="row"><div class="hit" role="link" tabindex="0" aria-label="Hidden deal" onclick="o('hidden deal')"></div>
+ <div class="promo"><button onclick="o('promo clicked')">Upgrade to see deal</button></div></div>
+<p id="out"></p><script>function o(s){document.getElementById('out').textContent=s}</script></body></html>

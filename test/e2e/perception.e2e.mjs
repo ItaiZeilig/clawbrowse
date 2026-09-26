@@ -721,3 +721,14 @@ test('an SPA route change that lazy-loads a chunk and renders after a long task 
   mustRef(r, 'easyJet $55');
   assert.equal(ref(r, 'Old home card'), null, 'no stale rows from the previous view');
 });
+
+test('a link rendered UNDER its own row content (Google results) is clickable; under another control it is covered', { skip }, async () => {
+  const t = await h.goto('rowlink.html');
+  assert.doesNotMatch(t.split('\n').find((l) => l.includes('easyJet')), /covered/);
+  assert.match(t.split('\n').find((l) => l.includes('Hidden deal')), /⊘ covered/);
+  await h.act({ op: 'click', ref: mustRef(t, 'From 55 US dollars. Nonstop flight with easyJet.') });
+  assert.equal(await out(), 'opened easyJet');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Hidden deal') });
+  assert.match(r, /covered/);
+  assert.equal(await out(), 'opened easyJet', 'the promo button was not clicked');
+});
