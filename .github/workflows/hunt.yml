@@ -1,0 +1,33 @@
+name: Bug hunt (real sites)
+
+# Nightly: run the shipped engine over real sites with oracles that need no knowledge of the page
+# (recall vs Chrome's accessibility tree, false "covered", stale results after an action, refused
+# safe actions). Any finding fails the run, so GitHub emails the maintainer. See scripts/hunt/hunt.mjs.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Hunt
+        run: node scripts/hunt/hunt.mjs hunt-report
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hunt-report
+          path: hunt-report/

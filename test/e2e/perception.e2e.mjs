@@ -769,3 +769,12 @@ test('hunter: a list item scrolled under its panel\'s sticky header is "scrolled
   await h.act({ op: 'click', ref: line.split(/\s+/)[0] });
   assert.equal(await h.js('document.title'), 'item 1');
 });
+
+test('hunter: web-component buttons (shadow control + slotted label) are named from the slot and not "covered"', { skip }, async () => {
+  const t = await h.goto('wc.html');
+  const login = t.split('\n').find((l) => l.includes('"Log in"'));
+  const reset = t.split('\n').find((l) => l.includes('"Reset"'));
+  assert.ok(login && !/covered/.test(login), t); assert.ok(reset && !/covered/.test(reset), t);
+  await h.act({ op: 'click', ref: reset.split(/\s+/)[0] });
+  assert.equal(await out(), 'reset clicked');
+});

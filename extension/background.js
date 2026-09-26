@@ -476,7 +476,9 @@ const SNAPSHOT = `(function(seed, opts){
     // Visible descendants only: display:none / hidden children (tooltips, menus) must not leak in.
     // A rich-text editor's text is its VALUE, never its name (else typing into it renames it and
     // its ref is refused on the next action).
-    var txt = (tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||e.isContentEditable) ? '' : [].map.call(e.childNodes,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && visible(n) ? name(n,seen) : ''); }).join(' ').trim();
+    // A <slot> shows the nodes ASSIGNED to it (a web component's light-DOM label), not its children.
+    var kids = tag==='SLOT' ? ((e.assignedNodes && e.assignedNodes({flatten:true}).length) ? e.assignedNodes({flatten:true}) : e.childNodes) : e.childNodes;
+    var txt = (tag==='INPUT'||tag==='SELECT'||tag==='TEXTAREA'||e.isContentEditable) ? '' : [].map.call(kids,function(n){ return n.nodeType===3 ? n.textContent : (n.nodeType===1 && visible(n) ? name(n,seen) : ''); }).join(' ').trim();
     if(txt) return txt;
     return e.getAttribute('title')||e.getAttribute('placeholder')||e.getAttribute('aria-placeholder')||'';
   }
@@ -560,13 +562,17 @@ const SNAPSHOT = `(function(seed, opts){
     if(rs.length>1){ for(var i=0;i<rs.length;i++){ var q=rs[i]; if(q.width>=2 && q.height>=2 && q.bottom>0 && q.top<v.innerHeight) return {x:q.x+q.width/2, y:q.y+q.height/2, r:r}; } }
     return {x:r.x+r.width/2, y:r.y+r.height/2, r:r};
   };
+  // Pointing at a web component's SLOTTED text (its light-DOM label) makes the shadow root's
+  // elementFromPoint answer with the host: that's the control's own content, not a cover.
+  function slotted(t, f){ var rt=t.getRootNode(); return !!(rt && rt.host && f===rt.host && t.querySelector && t.querySelector('slot')); }
+  cache.slotted=slotted;
   cache.hits=function(t, lx, ly){
     try{
       if(lx==null){ var hp=cache.pt(t); lx=hp.x; ly=hp.y; }
       var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
       var f=root.elementFromPoint(lx,ly), g=0;
       while(f && sroot(f) && g++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
-      return !!f && (t===f || t.contains(f) || (t.control && t.control===f) || cache.sameWidget(t, f));
+      return !!f && (t===f || t.contains(f) || (t.control && t.control===f) || slotted(t, f) || cache.sameWidget(t, f));
     }catch(_){ return true; }
   };
   var hits=cache.hits;
@@ -724,7 +730,7 @@ const SNAPSHOT = `(function(seed, opts){
     } else if((function(){ var fv=surf.ownerDocument.defaultView; return fv!==window && (lx<0||ly<0||lx>=fv.innerWidth||ly>=fv.innerHeight); })()){
       base.off='scroll'; // scrolled out of its (same-origin) iframe's viewport
     } else if(!hits(surf, lx, ly) && reachable(surf, lx, ly)){
-      base.off='scroll'; // hidden under a sticky bar / a panel header: scrolling brings it out
+      base.off='scroll'; base.dist=1; // hidden under a sticky bar / a panel header: right here, scrolling brings it out
     } else if(!hits(surf, lx, ly)){
       // Not hittable: either scrolled out of an overflow container (reachable — acting scrolls it
       // in) or genuinely covered by an overlay/modal (needs dismissing first).
@@ -1213,7 +1219,7 @@ async function resolveHit(tabId, ref, opts) {
       var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
       var f=root.elementFromPoint(lx,ly), k=0;
       while(f && sroot(f) && k++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
-      var hit=!!f && (s===f || s.contains(f) || (s.control && s.control===f) || (c.sameWidget && c.sameWidget(s, f)));
+      var hit=!!f && (s===f || s.contains(f) || (s.control && s.control===f) || (c.slotted && c.slotted(s, f)) || (c.sameWidget && c.sameWidget(s, f)));
       return {x:x, y:y, inView:inView && x>=0 && y>=0 && x<innerWidth && y<innerHeight, hit:hit};
     };
     // Don't move the page when the target is already on screen and hittable: needless scrolling

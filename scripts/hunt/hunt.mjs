@@ -167,3 +167,18 @@ try {
     fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2));
   }
 } finally { await h.close(); }
+
+// Summary (markdown, also for the GitHub job summary) and exit code: any oracle finding fails the
+// run so it gets noticed; sites that couldn't be reached (network, bot walls) are listed, not failed.
+const real = report.flatMap((e) => e.findings.filter((f) => f.oracle !== 'error').map((f) => ({ url: e.url, ...f })));
+const unreachable = report.filter((e) => e.findings.some((f) => f.oracle === 'error'));
+const md = [`## PawBrowse bug hunt — ${report.length} sites, ${real.length} finding(s)`, ''];
+if (real.length) {
+  md.push('| site | oracle | row | detail |', '|---|---|---|---|');
+  for (const f of real) md.push(`| ${f.url.replace(/^https:\/\//, '').slice(0, 50)} | ${f.oracle} | ${String(f.row || '').replace(/\|/g, '/').slice(0, 60)} | ${String(f.detail || '').replace(/\|/g, '/').replace(/\n/g, ' ').slice(0, 120)} |`);
+} else md.push('No findings: every oracle is quiet on every reachable site.');
+if (unreachable.length) md.push('', `Unreachable or errored (not counted): ${unreachable.map((e) => e.url).join(', ')}`);
+fs.writeFileSync(path.join(outDir, 'summary.md'), md.join('\n') + '\n');
+if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md.join('\n') + '\n');
+console.log(`\n${real.length} finding(s); report: ${path.join(outDir, 'report.json')}`);
+process.exitCode = real.length ? 1 : 0;

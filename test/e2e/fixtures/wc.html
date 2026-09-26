@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Web components</title></head><body>
+<x-button id="login" href="#login">Log in</x-button>
+<x-button id="reset" kind="button">Reset</x-button>
+<p id="out"></p>
+<script>
+ // Lit/MDN-style: the real control lives in the shadow root; its label is SLOTTED light DOM, referenced via aria-labelledby.
+ customElements.define('x-button', class extends HTMLElement { connectedCallback(){
+   const r=this.attachShadow({mode:'open'}), id='label-'+Math.random().toString(36).slice(2);
+   const tag=this.getAttribute('kind')==='button'?'button':'a';
+   r.innerHTML='<'+tag+' class="button" '+(tag==='a'?'href="'+this.getAttribute('href')+'"':'')+' aria-labelledby="'+id+'" style="display:inline-block;padding:8px 14px;border:1px solid"><span id="'+id+'"><slot></slot></span></'+tag+'>';
+   r.querySelector('.button').addEventListener('click', e=>{ e.preventDefault(); document.getElementById('out').textContent=this.id+' clicked'; });
+ }});
+</script></body></html>
