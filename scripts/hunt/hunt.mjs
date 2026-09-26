@@ -82,6 +82,8 @@ async function recallOracle(h) {
       var r=el.getBoundingClientRect(); if(r.width<4||r.height<4) return;
       var cx=r.x+r.width/2, cy=r.y+r.height/2; if(cx<0||cy<0||cx>=innerWidth||cy>=innerHeight) return;
       if(!el.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return;
+      // clipped away by an overflow:hidden/auto ancestor (truncated text, collapsed panel): not visible
+      for(var o=el.parentElement; o && o!==document.body; o=o.parentElement){ var ocs=getComputedStyle(o); if(ocs.overflowX!=='visible'||ocs.overflowY!=='visible'){ var q=o.getBoundingClientRect(); if(cx<q.left||cx>q.right||cy<q.top||cy>q.bottom) return; } }
       if(el.closest('[aria-hidden="true"],[inert]')||el.matches(':disabled')||el.closest('[aria-disabled="true"]')) return;
       // accounted for if it, an ancestor (3 levels) or a descendant is a listed element
       for(var a=el,g=0; a&&g<4; a=a.parentElement,g++) if(listed.has(a)) return;

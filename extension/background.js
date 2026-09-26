@@ -645,6 +645,23 @@ const SNAPSHOT = `(function(seed, opts){
     walk(document, 0, 0, 0);
     return out;
   }
+  // Not hittable, but only because a sticky/fixed bar (not a modal) or something OUTSIDE its own
+  // scroll box sits on top of it — e.g. a sidebar list scrolled under the sidebar's filter header.
+  // Acting scrolls it into the open, so it's "scrolled out", not "covered".
+  function reachable(t, lx, ly){
+    try{
+      var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
+      var f=root.elementFromPoint(lx,ly); if(!f || f.contains(t)) return false;
+      var view=t.ownerDocument.defaultView;
+      for(var a=f; a && a.nodeType===1; a=a.parentElement){
+        if(a.matches('dialog,[role=dialog],[role=alertdialog],[aria-modal=true]')) return false;
+        var cs=view.getComputedStyle(a);
+        if(cs.position==='fixed' || cs.position==='sticky'){ var q=a.getBoundingClientRect(); return q.width*q.height < 0.4*view.innerWidth*view.innerHeight; }
+      }
+      var sc=t.parentElement; while(sc && !(sc.scrollHeight>sc.clientHeight+2 && /(auto|scroll)/.test(view.getComputedStyle(sc).overflowY))) sc=sc.parentElement;
+      return !!sc && sc!==t.ownerDocument.body && sc!==t.ownerDocument.documentElement && !sc.contains(f);
+    }catch(_){ return false; }
+  }
   var scrollerCache=new Map(); // element -> does it clip its overflow? (one style read per ancestor per snapshot)
   function clipper(a, view){ var v=scrollerCache.get(a); if(v===undefined){ var cs=view.getComputedStyle(a); v=!(cs.overflowX==='visible' && cs.overflowY==='visible'); scrollerCache.set(a,v); } return v; }
   function clipped(t){
@@ -706,6 +723,8 @@ const SNAPSHOT = `(function(seed, opts){
       base.off=y<0?'up':'down'; base.dist=y<0?-y:y-VH;
     } else if((function(){ var fv=surf.ownerDocument.defaultView; return fv!==window && (lx<0||ly<0||lx>=fv.innerWidth||ly>=fv.innerHeight); })()){
       base.off='scroll'; // scrolled out of its (same-origin) iframe's viewport
+    } else if(!hits(surf, lx, ly) && reachable(surf, lx, ly)){
+      base.off='scroll'; // hidden under a sticky bar / a panel header: scrolling brings it out
     } else if(!hits(surf, lx, ly)){
       // Not hittable: either scrolled out of an overflow container (reachable — acting scrolls it
       // in) or genuinely covered by an overlay/modal (needs dismissing first).
@@ -1383,9 +1402,11 @@ const quietExpr = (since) => `(function(){ ${MO_INSTALL}
   M.times.forEach(function(t){ if(t<s && t>=s-600) b[Math.floor((s-t)/100)]=1; });
   // Finite CSS transitions/animations still running (a menu fading in, a panel sliding open):
   // until they finish, their contents may still be invisible. Infinite ones (spinners) don't count.
-  var anim=0;
-  try{ document.getAnimations().forEach(function(a){ if(a.playState==='running' && a.effect){ var ct=a.effect.getComputedTiming(); if(isFinite(ct.endTime) && ct.endTime<=2000) anim++; } }); }catch(_){}
-  return [anim ? 0 : now-M.last, Object.keys(b).length>=4];
+  // Those the ACTION started (startTime after it) are counted separately: they matter even on a page
+  // that animates constantly in the background (a panel's staggered entrance on a carousel page).
+  var anim=0, animNew=0;
+  try{ document.getAnimations().forEach(function(a){ if(a.playState==='running' && a.effect){ var ct=a.effect.getComputedTiming(); if(isFinite(ct.endTime) && ct.endTime<=2000){ anim++; if(a.startTime!=null && a.startTime>=s-30) animNew++; } } }); }catch(_){}
+  return [anim ? 0 : now-M.last, Object.keys(b).length>=4, animNew];
 })()`;
 
 // Network tracking only while an action is being watched (see attach()).
@@ -1464,14 +1485,15 @@ async function settle(tabId, capMs, since, opts) {
     // quiet for a beat (JS executing, timers) before rendering, so ask for a longer quiet period.
     const transition = (w.routeAt || 0) >= start - 50 || (w.lastScript || 0) >= start - 50;
     const needQuiet = transition ? 250 : 60, quietCap = transition ? 1500 : 600;
-    let quiet = 1e9, ambient = false;
+    let quiet = 1e9, ambient = false, animNew = 0;
     const tq = Date.now();
-    try { [quiet, ambient] = await evaluate(tabId, quietExpr(start)); } catch { await sleep(30); continue; } // document swapping
+    try { [quiet, ambient, animNew] = await evaluate(tabId, quietExpr(start)); } catch { await sleep(30); continue; } // document swapping
     // If even this tiny probe waited >50ms to run, the page's main thread was busy (JS/render):
     // not quiet, whatever the observers have reported so far.
     if (Date.now() - tq > 50) quiet = 0;
     // DOM still changing: wait for 60ms of quiet, capped at 600ms after the network went idle, or
     // 120ms on a page that was already constantly mutating (clocks, tickers, carousels) before us.
+    if (animNew && now - idleSince < 1500) { await sleep(40); continue; } // the action's own animations
     if (quiet < needQuiet && now - idleSince < (ambient ? 120 : quietCap)) { await sleep(Math.max(10, Math.min(60, needQuiet - quiet))); continue; }
     break;
   }

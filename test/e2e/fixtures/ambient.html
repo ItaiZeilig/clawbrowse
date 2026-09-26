@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Ambient</title>
+<style>@keyframes pop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+ #panel a{display:block;opacity:0;animation:pop .25s ease forwards} #panel a:nth-child(2){animation-delay:.2s} #panel a:nth-child(3){animation-delay:.4s}
+ .side{height:160px;overflow:auto;border:1px solid;width:220px;position:relative} .head{position:sticky;top:0;background:#fff;height:40px;border-bottom:1px solid}</style></head><body>
+<span id="tick"></span>
+<button onclick="document.getElementById('panel').innerHTML='<a href=#1>AirPods</a><a href=#2>Find a Store</a><a href=#3>Apple Vision Pro</a>'">Search site</button>
+<div id="panel"></div>
+<div class="side"><div class="head"><input placeholder="Filter"></div><ul id="list"></ul></div>
+<script>setInterval(()=>document.getElementById('tick').textContent=Date.now(),16);
+ document.getElementById('list').innerHTML=Array.from({length:12},(_, i)=>'<li><a href="#'+i+'" onclick="document.title=\'item '+i+'\'">Sidebar item '+i+'</a></li>').join('');
+ document.querySelector('.side').scrollTop=62;</script></body></html>

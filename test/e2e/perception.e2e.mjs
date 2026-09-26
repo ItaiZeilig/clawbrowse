@@ -755,3 +755,17 @@ test('hunter: a menu that opens in a freshly loading iframe is in the click resu
   const r = await h.act({ op: 'click', ref: mustRef(t, 'Apps') });
   assert.match(r, /"Drive"/, r);
 });
+
+test('hunter: on a constantly-animating page, a panel with staggered entrance animations is in the click result', { skip }, async () => {
+  const t = await h.goto('ambient.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Search site') });
+  mustRef(r, 'Apple Vision Pro');
+});
+
+test('hunter: a list item scrolled under its panel\'s sticky header is "scrolled out" (↕), and clickable', { skip }, async () => {
+  const t = await h.goto('ambient.html');
+  const line = t.split('\n').find((l) => l.includes('"Sidebar item 1"'));
+  assert.ok(line && /↕/.test(line) && !/covered/.test(line), line);
+  await h.act({ op: 'click', ref: line.split(/\s+/)[0] });
+  assert.equal(await h.js('document.title'), 'item 1');
+});
