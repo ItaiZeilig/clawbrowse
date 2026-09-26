@@ -1669,7 +1669,10 @@ async function waitStable(target, ref) {
       var animating=function(){ try{ for(var a=s,g=0;a&&g<8;a=a.parentElement,g++){ var an=a.getAnimations?a.getAnimations():[]; for(var i=0;i<an.length;i++){ var ct=an[i].effect&&an[i].effect.getComputedTiming(); if(an[i].playState==='running' && ct && isFinite(ct.endTime)) return true; } } }catch(_){} return false; };
       // Fast path: nothing animating and the box unchanged over one frame -> go. Once it has been seen
       // moving, require two quiet frames in a row.
-      var last=key(), same=0, moved=animating(), t0=performance.now();
+      // Nothing animating on it or its ancestors: click now (no frame wait). JS-driven motion is
+      // still caught by the click-time hit check.
+      if(!animating()) return res(1);
+      var last=key(), same=0, moved=true, t0=performance.now();
       (function tick(){ setTimeout(function(){ var k=key(), an=animating(); if(k===last && !an){ if(++same>=(moved?2:1)) return res(1); } else { same=0; last=k; moved=true; } if(performance.now()-t0>6000) return res(0); tick(); }, 16); })();
     })`);
   } catch {}
