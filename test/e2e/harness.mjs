@@ -96,7 +96,7 @@ export async function launch(opts = {}) {
   async function tabInfo(id) {
     const t = tabs.get(id); if (!t) throw new Error('no tab');
     const { targetInfo } = await cdp.send('Target.getTargetInfo', { targetId: t.targetId });
-    return { id, url: targetInfo.url, title: targetInfo.title, active: id === activeTabId, windowId: 1 };
+    return { id, url: targetInfo.url, title: targetInfo.title, active: id === activeTabId, windowId: 1, status: 'complete' };
   }
 
   // ---- chrome.* shim ----
@@ -104,6 +104,20 @@ export async function launch(opts = {}) {
   const noopEvent = { addListener() {} };
   // chrome.debugger.onEvent: route flat-session CDP events back to the tab that owns the session.
   const eventListeners = [];
+  const createdListeners = []; // chrome.tabs.onCreated: pages opened BY a tab (target=_blank, window.open)
+  await cdp.send('Target.setDiscoverTargets', { discover: true });
+  cdp.listeners.push(async (m) => {
+    if (m.method !== 'Target.targetCreated' || m.sessionId) return;
+    const info = m.params.targetInfo;
+    if (info.type !== 'page' || !info.openerId) return;
+    const opener = [...tabs].find(([, t]) => t.targetId === info.openerId);
+    if (!opener || [...tabs.values()].some((t) => t.targetId === info.targetId)) return;
+    const { sessionId } = await cdp.send('Target.attachToTarget', { targetId: info.targetId, flatten: true });
+    const id = nextTab++;
+    tabs.set(id, { targetId: info.targetId, sessionId });
+    activeTabId = id; // a new tab from a link becomes the active one, as in Chrome
+    for (const l of createdListeners) l({ id, openerTabId: opener[0], url: info.url });
+  });
   const childToTab = new Map(); // auto-attached child (iframe) session -> tabId
   cdp.listeners.push((m) => {
     let src = null;
@@ -141,6 +155,7 @@ export async function launch(opts = {}) {
       async group() { return 1; },
       async ungroup() {},
       onRemoved: noopEvent,
+      onCreated: { addListener(fn) { createdListeners.push(fn); } },
     },
     tabGroups: { async update() {} },
     storage: { session: { async get() { return {}; }, async set() {} }, local: { async get() { return {}; } } },

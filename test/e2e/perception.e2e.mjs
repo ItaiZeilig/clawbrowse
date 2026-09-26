@@ -796,3 +796,49 @@ test('a click is refused when an overlay appears at the moment of the click (hit
   assert.notEqual(await out(), 'trap clicked', 'the overlay must not receive the click');
   void r;
 });
+
+/* ----------------------- gaps found by reading jev-ultrafast ----------------- */
+
+test('jev: on a page with CSS scroll-behavior:smooth, a far-below click still lands (instant scroll)', { skip }, async () => {
+  const t = await h.goto('jevgaps.html');
+  const f = await h.cmd('observe', { find: 'Far button' });
+  await h.act({ op: 'click', ref: mustRef(f, 'Far button (smooth-scroll page)') });
+  assert.equal(await out(), 'far clicked');
+  void t;
+});
+
+test('jev: a recycled row (virtualized list) is refused instead of deleting the wrong item', { skip }, async () => {
+  const t = await h.goto('jevgaps.html');
+  const bob = t.split('\n').find((l) => l.includes('"Delete" in "Bob'));
+  assert.ok(bob, t);
+  await h.js('recycle()'); // the same <li>/<button> now shows Dave
+  const r = await h.act({ op: 'click', ref: bob.split(/\s+/)[0] });
+  assert.match(r, /row this control belongs to changed/);
+  assert.notEqual(await out(), 'deleted Dave');
+});
+
+test('jev: values a field would reject are refused before typing', { skip }, async () => {
+  const t = await h.goto('jevgaps.html');
+  const r = await h.act({ op: 'type', ref: mustRef(t, 'Email', 'fill'), text: 'not an email' },
+    { op: 'type', ref: mustRef(t, 'Guests', 'fill'), text: 'two' }, { op: 'type', ref: mustRef(t, 'Zip', 'fill'), text: '12a' });
+  assert.match(r, /not a valid email/); assert.match(r, /not a valid number/); assert.match(r, /specific format \(5 digits\)/);
+  assert.equal(await h.js(`[em.value, gu.value, zip.value].join('|')`), '||');
+  const ok = await h.act({ op: 'type', ref: mustRef(t, 'Email', 'fill'), text: 'a@b.co' });
+  assert.match(ok, /type e\d+/); assert.equal(await h.js('em.value'), 'a@b.co');
+});
+
+test('jev: a target=_blank link is followed into the new tab', { skip }, async () => {
+  const t = await h.goto('jevgaps.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Open docs in new tab') });
+  assert.match(r, /opened a NEW TAB/);
+  mustRef(r, 'Slow page button');
+});
+
+test('jev: back and reload', { skip }, async () => {
+  await h.goto('widgets.html');
+  await h.goto('tricky.html');
+  const r = await h.act({ op: 'back' });
+  assert.match(r, /Widgets/);
+  const r2 = await h.act({ op: 'reload' });
+  assert.match(r2, /Widgets/);
+});

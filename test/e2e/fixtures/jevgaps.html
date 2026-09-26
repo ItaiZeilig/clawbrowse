@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Gaps</title>
+<style>html{scroll-behavior:smooth} body{font:15px sans-serif}</style></head><body>
+<a href="slow.html" target="_blank">Open docs in new tab</a>
+<label>Email <input id="em" type="email"></label>
+<label>Guests <input id="gu" type="number" min="1"></label>
+<label>Zip <input id="zip" pattern="[0-9]{5}" title="5 digits"></label>
+<ul id="vlist"></ul>
+<div style="height:1600px"></div>
+<button id="far" onclick="document.getElementById('out').textContent='far clicked'">Far button (smooth-scroll page)</button>
+<div style="height:600px"></div>
+<p id="out"></p>
+<script>
+ // A "virtualized" list: row elements are REUSED for other items when it scrolls.
+ const items=['Alice','Bob','Carol','Dave']; let offset=0;
+ const ul=document.getElementById('vlist');
+ for(let i=0;i<2;i++){ const li=document.createElement('li'); li.innerHTML='<span></span> <button>Delete</button>'; li.querySelector('button').onclick=()=>document.getElementById('out').textContent='deleted '+li.querySelector('span').textContent; ul.append(li); }
+ function paint(){ [...ul.children].forEach((li,i)=>li.querySelector('span').textContent=items[offset+i]); }
+ window.recycle=()=>{ offset=2; paint(); }; paint();
+</script></body></html>

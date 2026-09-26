@@ -333,6 +333,7 @@ function assertNoOpenDialog(tabId) {
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   forgetTab(tabId, true);
+  openedBy.delete(tabId);
   const owner = tabOwner.get(tabId);
   tabOwner.delete(tabId);
   if (owner != null) {
@@ -786,6 +787,7 @@ const SNAPSHOT = `(function(seed, opts){
   if(offView.length>OFFCAP){ offView.forEach(function(a,k){ a.ord=k; }); offView.sort(function(a,b){ return a.dist-b.dist; }); offView.splice(OFFCAP); offView.sort(function(a,b){ return a.ord-b.ord; }); }
   var actions=inView.concat(offView);
   // The nearest ancestor text that isn't just the label itself: which row/item a control is in.
+  cache.ctxOf=function(el, lab){ return ctxOf(el, lab); };
   function ctxOf(el, lab){
     for(var p=el&&el.parentElement, g=0; p && g<6 && p.tagName!=='BODY'; p=p.parentElement, g++){
       var tx=clean(p.innerText,400); if(!tx || tx===lab) continue;
@@ -1200,6 +1202,7 @@ async function observe(tabId, opts) {
 async function resolveHit(tabId, ref, opts) {
   const forFill = opts && opts.fill ? 'true' : 'false';
   const noScroll = opts && opts.noScroll ? 'true' : 'false', noHit = opts && opts.noHit ? 'true' : 'false';
+  const TXT = opts && opts.text != null ? JSON.stringify(String(opts.text)) : 'null';
   const R = JSON.stringify(String(ref));
   return evaluate(tabId, `(function(){
     var c=window.__pawbrowse; if(!c||!c.byId) return {error:'no snapshot yet; observe first'};
@@ -1207,9 +1210,19 @@ async function resolveHit(tabId, ref, opts) {
     var e=c.get?c.get(${R}):null;
     if(!e||!e.isConnected) return {error:'element no longer on page (observe again)'};
     if(c.guard && c.guards && c.guards[${R}]!=null && c.guard(e)!==c.guards[${R}]) return {error:'element changed since observe (observe again)'};
+    // Same node, same label — but a different ROW? Virtualized lists recycle row elements for other
+    // items: "Delete" may now belong to someone else. The row context it was listed with must hold.
+    var fp=c.fps&&c.fps[${R}]; if(fp && fp.ctx && c.ctxOf && c.ctxOf(e, fp.label)!==fp.ctx) return {error:'the row this control belongs to changed since observe (now in "'+c.ctxOf(e, fp.label)+'"); observe again'};
     if(e.matches(':disabled')||e.closest('[aria-disabled="true"],[inert]')) return {error:'element is disabled'};
     if(${forFill} && (e.readOnly||e.getAttribute('aria-readonly')==='true')) return {error:'field is read-only'};
     if(${forFill} && !('value' in e) && !e.isContentEditable) return {error:'not an editable field (observe again)'};
+    // Typed text that the field would reject (email/number/url/pattern/maxlength) is refused up front:
+    // nothing is typed, instead of a value silently dropped or half-entered.
+    if(${forFill} && ${TXT}!==null && ${TXT}!=='' && e.tagName==='INPUT'){
+      var probe=e.cloneNode(); probe.value=${TXT};
+      if(['email','number','url'].indexOf(e.type)>=0 && (probe.value!==${TXT} || probe.validity.typeMismatch || probe.validity.badInput)) return {error:'"'+${TXT}+'" is not a valid '+e.type+' for this field (nothing typed)'};
+      if(e.hasAttribute('pattern') && probe.validity.patternMismatch) return {error:'the field requires a specific format ('+(e.title||e.getAttribute('pattern'))+'); "'+${TXT}+'" does not match (nothing typed)'};
+    }
     // Value-set inputs (date/time/range/color...) take the setter path, not click+type.
     if(${forFill} && e.tagName==='INPUT' && ['date','time','datetime-local','month','week','color','range'].indexOf(e.type)>=0) return {set:true};
     // Click the control's visible SURFACE: a styled checkbox's <label>, or the element itself.
@@ -1241,7 +1254,7 @@ async function resolveHit(tabId, ref, opts) {
     // Don't move the page when the target is already on screen and hittable: needless scrolling
     // closes popups/date pickers and jolts the page. Otherwise bring it to the centre and re-check.
     var p=at(); if(p.error) return p;
-    if(!(p.inView && p.hit) && !${noScroll}){ s.scrollIntoView({block:'center',inline:'center'}); p=at(); if(p.error) return p; }
+    if(!(p.inView && p.hit) && !${noScroll}){ s.scrollIntoView({block:'center',inline:'center',behavior:'instant'}); p=at(); if(p.error) return p; }
     if(!p.inView && !${noHit}) return {error:'element off-screen after scroll'};
     if(${noHit}) return {x:p.x, y:p.y};
     if(!p.hit) return {error:'element is covered by another element (dismiss the overlay/dialog first)'};
@@ -1315,7 +1328,7 @@ async function centerOfText(tabId, text) {
     if(!pool.length) return null;
     pool.sort(function(a,b){return a.area-b.area;});
     var chosen=pool[0].el;
-    chosen.scrollIntoView({block:'center',inline:'center'});
+    chosen.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
     var rr=chosen.getBoundingClientRect();
     var cx=Math.round(rr.left+rr.width/2), cy=Math.round(rr.top+rr.height/2);
     if(cx<0||cy<0||cx>=innerWidth||cy>=innerHeight) return null;
@@ -1596,6 +1609,27 @@ async function pressKey(tabId, combo) {
   return null;
 }
 
+/* ------------------------- Tabs opened by an action -------------------------- *
+ * target=_blank links and window.open() open a NEW tab: the agent would otherwise keep looking at
+ * the old one and see "page did NOT change". A tab opened by the tab we're acting on is adopted
+ * into the session (and its group) and becomes the one we drive.                                */
+const openedBy = new Map(); // opener tabId -> newest tab it opened during an action
+chrome.tabs.onCreated.addListener((t) => { if (t.openerTabId != null && acting.has(t.openerTabId)) openedBy.set(t.openerTabId, t.id); });
+
+async function followNewTab(session, tabId) {
+  const nt = openedBy.get(tabId);
+  openedBy.delete(tabId);
+  if (nt == null) return null;
+  const s = sessionState(session);
+  s.activeTabId = nt; s.createdTabs.add(nt); tabOwner.set(nt, session); persistState();
+  await ensureGroup(s, nt);
+  // Let it get past about:blank and load, then read it like any navigation.
+  for (let i = 0; i < 50; i++) { try { const t = await chrome.tabs.get(nt); if (t.url && !/^about:blank/.test(t.url) && t.status === 'complete') break; } catch { return null; } await sleep(100); }
+  await attach(nt);
+  await settle(nt, 3000);
+  return nt;
+}
+
 /* ---------------------------------- WebMCP --------------------------------- *
  * Pages that implement WebMCP (navigator.modelContext.registerTool / <form toolname>) describe
  * their own actions with JSON schemas. Calling one is a single deterministic step instead of a
@@ -1819,7 +1853,7 @@ async function runOp(tabId, op) {
       return `click_text "${op.text}"`;
     }
     case 'type': {
-      const r = await resolveHit(T, REF, { fill: true });
+      const r = await resolveHit(T, REF, { fill: true, text: op.text ?? '' });
       if (r.error) return `${op.ref}: ${r.error}`;
       if (r.set) {
         const sv = await setValue(T, REF, op.text);
@@ -1872,6 +1906,19 @@ async function runOp(tabId, op) {
       if (!paths.length) return `${op.ref}: upload needs paths:["/absolute/file"]`;
       const u = await uploadFiles(T, REF, paths);
       return u.error ? `${op.ref}: ${u.error}` : `upload ${op.ref} (${paths.length} file${paths.length > 1 ? 's' : ''})`;
+    }
+    case 'back': case 'forward': {
+      const { currentIndex, entries } = await sendCdp(tabId, 'Page.getNavigationHistory');
+      const to = entries[currentIndex + (op.op === 'back' ? -1 : 1)];
+      if (!to) return `${op.op}: no ${op.op === 'back' ? 'previous' : 'next'} page in this tab's history`;
+      const w = tabWatch(tabId); w.navStart = Date.now(); w.navDone = 0; w.committed = false; w.navReq = null;
+      await sendCdp(tabId, 'Page.navigateToHistoryEntry', { entryId: to.id });
+      return `${op.op} → ${String(to.url).slice(0, 100)}`;
+    }
+    case 'reload': {
+      const w = tabWatch(tabId); w.navStart = Date.now(); w.navDone = 0; w.committed = false; w.navReq = null;
+      await sendCdp(tabId, 'Page.reload', {});
+      return 'reload';
     }
     case 'click_xy': {
       // Coordinates from the last browser_screenshot image (converted to CSS px).
@@ -2085,6 +2132,11 @@ async function handleCommand(cmd, args, token, session) {
         // the caller think they failed and retry them.
         let table;
         try { table = await observe(tabId); } catch { table = null; }
+        const nt = await followNewTab(session, tabId).catch(() => null);
+        if (nt != null) {
+          const t2 = await observe(nt).catch(() => '(new tab not readable yet: observe next)');
+          return `ran ${ops.length} op(s) [page changed]:\n${logLines.join('\n')}\n${takeDialogLog(tabId)}  → the page opened a NEW TAB (tab ${nt}); now driving it (the previous tab ${tabId} is left open)\n\n${t2}`;
+        }
         const changed = before == null || after == null || before !== after || table == null || seen == null || tableBody(table) !== seen || dialogLog.has(tabId);
         const note = changed ? 'page changed' : 'page did NOT change (if you expected an effect, the action may not have worked — try a different target)';
         if (table == null) {
