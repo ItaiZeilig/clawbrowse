@@ -177,6 +177,8 @@ export async function launch(opts = {}) {
     cdp: (m, p) => cdp.send(m, p, tabs.get(activeTabId).sessionId),
     // Evaluate inside PawBrowse's isolated world (what the snapshot sees).
     ev: (expr) => ext.evaluate(activeTabId, expr),
+    // Raw CDP events of the active tab's top-level session (e.g. Page.screencastFrame for recording).
+    onEvent(fn) { const sid = () => tabs.get(activeTabId).sessionId; cdp.listeners.push((m) => { if (m.sessionId === sid()) fn(m.method, m.params); }); },
     ext,
     get tabId() { return activeTabId; },
     tab0,

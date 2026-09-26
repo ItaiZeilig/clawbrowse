@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Route</title></head><body>
+<div id="app"><button id="go">Search</button><a href="#">Old home card</a></div>
+<script>
+ document.getElementById('go').onclick = () => {
+   history.pushState({}, '', '?results');
+   document.title = 'Results';
+   const s = document.createElement('script'); s.src = 'chunk.js?delay=250'; document.head.append(s);
+ };
+</script></body></html>

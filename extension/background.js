@@ -422,7 +422,11 @@ async function endSession(session) {
 const MO_INSTALL = `var M=window.__pawmo; if(!M){ M=window.__pawmo={last:performance.now(),times:[],roots:new WeakSet()};
   M.mo=new MutationObserver(function(){ var t=performance.now(); M.last=t; M.times.push(t); if(M.times.length>64) M.times.shift(); });
   M.watch=function(r){ if(!M.roots.has(r)){ M.roots.add(r); try{ M.mo.observe(r,{subtree:true,childList:true,attributes:true,characterData:true}); }catch(_){} } };
-  M.watch(document); }`;
+  M.watch(document);
+  // A busy main thread (parsing/running JS, rendering) is not "quiet" even when the DOM is still:
+  // SPA routes often mutate nothing for a few hundred ms and then render everything at once.
+  try{ new PerformanceObserver(function(l){ l.getEntries().forEach(function(e){ var end=e.startTime+e.duration; if(end>M.last) M.last=end; }); }).observe({type:'longtask', buffered:false}); }catch(_){}
+  }`;
 const SNAPSHOT = `(function(seed, opts){
   opts=opts||{};
   try{
@@ -1143,30 +1147,37 @@ async function resolveHit(tabId, ref, opts) {
     // Click the control's visible SURFACE: a styled checkbox's <label>, or the element itself.
     var s=c.surface?c.surface(e):e;
     if(!s) return {error:'element not visible'};
-    if(!${noScroll}) s.scrollIntoView({block:'center',inline:'center'});
-    var r=s.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
-    // Frame-local center (in the element's own frame viewport)...
-    var lx=r.x+r.width/2, ly=r.y+r.height/2;
-    // ...plus the offset chain of any ancestor iframes, giving the TOP-LEVEL click point for CDP.
-    var dx=0, dy=0, w=(s.ownerDocument&&s.ownerDocument.defaultView), g=0;
-    while(w && w.frameElement && g++<12){
-      var fe=w.frameElement, fr=fe.getBoundingClientRect(), fcs=fe.ownerDocument.defaultView.getComputedStyle(fe);
-      dx+=fr.left+fe.clientLeft+(parseFloat(fcs.paddingLeft)||0);
-      dy+=fr.top+fe.clientTop+(parseFloat(fcs.paddingTop)||0);
-      w=fe.ownerDocument.defaultView;
-    }
-    var x=Math.round(lx+dx), y=Math.round(ly+dy);
-    if(x<0||y<0||x>=innerWidth||y>=innerHeight) return {error:'element off-screen after scroll'};
     // Hit-test in the surface's OWN root (document / shadow root / iframe doc) with frame-local
-    // coords, descending through nested open shadow roots, so shadow-DOM and iframe elements
-    // aren't falsely reported as covered.
-    if(${noHit}) return {x:x, y:y};
-    var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
-    var f=root.elementFromPoint(lx,ly), k=0;
+    // coords, descending through nested open/closed shadow roots.
     var sroot=function(n){ return n.shadowRoot || (c.closed && c.closed.get(n)) || null; };
-    while(f && sroot(f) && k++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
-    if(!f || !(s===f || s.contains(f) || (s.control && s.control===f))) return {error:'element is covered by another element (dismiss the overlay/dialog first)'};
-    return {x:x, y:y};
+    var at=function(){
+      var r=s.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
+      var fw=s.ownerDocument.defaultView;
+      var lx=r.x+r.width/2, ly=r.y+r.height/2;
+      // ...plus the offset chain of any ancestor iframes, giving the TOP-LEVEL click point for CDP.
+      var dx=0, dy=0, w=fw, g=0;
+      while(w && w.frameElement && g++<12){
+        var fe=w.frameElement, fr=fe.getBoundingClientRect(), fcs=fe.ownerDocument.defaultView.getComputedStyle(fe);
+        dx+=fr.left+fe.clientLeft+(parseFloat(fcs.paddingLeft)||0);
+        dy+=fr.top+fe.clientTop+(parseFloat(fcs.paddingTop)||0);
+        w=fe.ownerDocument.defaultView;
+      }
+      var inView=r.top>=0 && r.left>=0 && r.bottom<=fw.innerHeight && r.right<=fw.innerWidth;
+      var x=Math.round(lx+dx), y=Math.round(ly+dy);
+      var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
+      var f=root.elementFromPoint(lx,ly), k=0;
+      while(f && sroot(f) && k++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
+      var hit=!!f && (s===f || s.contains(f) || (s.control && s.control===f));
+      return {x:x, y:y, inView:inView && x>=0 && y>=0 && x<innerWidth && y<innerHeight, hit:hit};
+    };
+    // Don't move the page when the target is already on screen and hittable: needless scrolling
+    // closes popups/date pickers and jolts the page. Otherwise bring it to the centre and re-check.
+    var p=at(); if(p.error) return p;
+    if(!(p.inView && p.hit) && !${noScroll}){ s.scrollIntoView({block:'center',inline:'center'}); p=at(); if(p.error) return p; }
+    if(!p.inView && !${noHit}) return {error:'element off-screen after scroll'};
+    if(${noHit}) return {x:p.x, y:p.y};
+    if(!p.hit) return {error:'element is covered by another element (dismiss the overlay/dialog first)'};
+    return {x:p.x, y:p.y};
   })()`);
 }
 
@@ -1249,9 +1260,12 @@ async function clickAt(tabId, x, y, opts) {
   const button = (opts && opts.button) || 'left', count = Math.max(1, Math.min(3, Number(opts && opts.count) || 1));
   await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
   // A double/triple click is successive press/release pairs with a rising clickCount.
+  // `buttons` must say which button is held: CDP defaults it to 0, and pointer-event widgets
+  // (Material components, e.g. Google's date picker "Done") ignore a pointerdown with no button.
+  const held = { left: 1, right: 2, middle: 4 }[button];
   for (let n = 1; n <= count; n++) {
-    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: n });
-    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: n });
+    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: held, clickCount: n });
+    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: n });
   }
 }
 
@@ -1266,7 +1280,8 @@ function tabWatch(tabId) {
   if (!w) { w = { mainFrame: null, inflight: new Map(), navStart: 0, navDone: 0, committed: true, navReq: null }; watches.set(tabId, w); }
   return w;
 }
-const TRACKED = new Set(['Fetch', 'XHR', 'Document']);
+// Script too: SPA route changes lazy-load code chunks and render only after they run.
+const TRACKED = new Set(['Fetch', 'XHR', 'Document', 'Script']);
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.tabId == null) return;
   const w = watches.get(source.tabId);
@@ -1284,7 +1299,10 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   switch (method) {
     case 'Network.requestWillBeSent':
       // Documents: only the main frame's (subframe documents finish on other sessions / may never).
-      if (TRACKED.has(params.type) && (params.type !== 'Document' || params.frameId === w.mainFrame)) w.inflight.set(params.requestId, now);
+      if (TRACKED.has(params.type) && (params.type !== 'Document' || params.frameId === w.mainFrame)) {
+        w.inflight.set(params.requestId, now);
+        if (params.type === 'Script') w.lastScript = now; // a code chunk: the page is mid-transition
+      }
       if (params.type === 'Document' && params.frameId === w.mainFrame && params.requestId === params.loaderId && w.navReq !== params.requestId) {
         if (w.navDone >= w.navStart) begin(params.requestId); else w.navReq = params.requestId;
       }
@@ -1314,7 +1332,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
         if (params.name === 'networkAlmostIdle' || params.name === 'networkIdle') w.netIdle = now;
       }
       break;
-    case 'Page.downloadWillBegin': case 'Page.navigatedWithinDocument':
+    case 'Page.navigatedWithinDocument':
+      if (params.frameId === w.mainFrame) w.routeAt = now; // SPA route change (pushState)
+      w.navDone = now;
+      break;
+    case 'Page.downloadWillBegin':
       w.navDone = now;
       break;
   }
@@ -1395,11 +1417,19 @@ async function settle(tabId, capMs, since, opts) {
     if (busy) { idleSince = 0; await sleep(30); continue; }
     if (now < grace) { await sleep(30); continue; } // debounce window: a request may still be coming
     if (!idleSince) idleSince = now;
+    // A route change or a freshly loaded code chunk means a new view is being built: it often goes
+    // quiet for a beat (JS executing, timers) before rendering, so ask for a longer quiet period.
+    const transition = (w.routeAt || 0) >= start - 50 || (w.lastScript || 0) >= start - 50;
+    const needQuiet = transition ? 250 : 60, quietCap = transition ? 1500 : 600;
     let quiet = 1e9, ambient = false;
+    const tq = Date.now();
     try { [quiet, ambient] = await evaluate(tabId, quietExpr(start)); } catch { await sleep(30); continue; } // document swapping
+    // If even this tiny probe waited >50ms to run, the page's main thread was busy (JS/render):
+    // not quiet, whatever the observers have reported so far.
+    if (Date.now() - tq > 50) quiet = 0;
     // DOM still changing: wait for 60ms of quiet, capped at 600ms after the network went idle, or
     // 120ms on a page that was already constantly mutating (clocks, tickers, carousels) before us.
-    if (quiet < 60 && now - idleSince < (ambient ? 120 : 600)) { await sleep(Math.max(10, 60 - quiet)); continue; }
+    if (quiet < needQuiet && now - idleSince < (ambient ? 120 : quietCap)) { await sleep(Math.max(10, Math.min(60, needQuiet - quiet))); continue; }
     break;
   }
 }

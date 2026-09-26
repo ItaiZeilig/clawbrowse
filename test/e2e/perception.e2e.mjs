@@ -714,3 +714,10 @@ test('an action whose only effect is page text or a dialog reports "page changed
   const t2 = await h.goto('tricky.html');
   assert.match(await h.act({ op: 'click', ref: mustRef(t2, 'Settings') }), /page did NOT change/, 'a dead click still says so');
 });
+
+test('an SPA route change that lazy-loads a chunk and renders after a long task returns the NEW view', { skip }, async () => {
+  const t = await h.goto('route.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Search') });
+  mustRef(r, 'easyJet $55');
+  assert.equal(ref(r, 'Old home card'), null, 'no stale rows from the previous view');
+});
