@@ -355,6 +355,7 @@ test('prompt gets the requested answer', { skip }, async () => {
 
 test('a dialog left open while idle gives a clear error, and {op:"dialog"} clears it', { skip }, async () => {
   await h.goto('dialogs.html');
+  await new Promise((r) => setTimeout(r, 1700)); // past the post-action window: we're idle now
   await h.js(`setTimeout(()=>alert('from the user'),10)`);
   await new Promise((r) => setTimeout(r, 200));
   await assert.rejects(h.observe(), /showing an alert dialog "from the user"/);
@@ -777,4 +778,21 @@ test('hunter: web-component buttons (shadow control + slotted label) are named f
   assert.ok(login && !/covered/.test(login), t); assert.ok(reset && !/covered/.test(reset), t);
   await h.act({ op: 'click', ref: reset.split(/\s+/)[0] });
   assert.equal(await out(), 'reset clicked');
+});
+
+test('a follow-up alert raised right after an action is answered and reported, not left freezing the page', { skip }, async () => {
+  const t = await h.goto('dialogs.html');
+  await h.act({ op: 'click', ref: mustRef(t, 'Late alert') }); // alert fires 100ms after the click
+  await new Promise((r) => setTimeout(r, 300));
+  const o = await h.observe();
+  assert.match(o, /dialog: alert "late" → accepted/, o.slice(0, 300));
+});
+
+test('a click is refused when an overlay appears at the moment of the click (hit-target interceptor)', { skip }, async () => {
+  const t = await h.goto('tricky.html');
+  // An overlay that appears on mousedown, over the target (e.g. a modal backdrop raised by a mousedown handler).
+  await h.js(`document.getElementById('morph').addEventListener('pointerdown', () => { const d=document.createElement('div'); d.id='trap'; d.textContent='Trap'; d.style='position:fixed;inset:0;background:rgba(0,0,0,.2)'; d.onclick=()=>o('trap clicked'); document.body.append(d); }, { once: true })`);
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Archive') });
+  assert.notEqual(await out(), 'trap clicked', 'the overlay must not receive the click');
+  void r;
 });

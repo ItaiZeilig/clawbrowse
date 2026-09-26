@@ -165,6 +165,30 @@ test('browser_screenshot returns an MCP image block plus its note', async () => 
   } finally { ext.close(); srv.kill(); }
 });
 
+test('upload paths: hidden files and files outside the allowed roots are refused; allowed ones forwarded resolved', async () => {
+  const fs = await import('node:fs'); const os = await import('node:os'); const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pb-up-'));
+  const ok = path.join(root, 'cv.txt'); fs.writeFileSync(ok, 'x');
+  fs.mkdirSync(path.join(root, '.ssh')); const secret = path.join(root, '.ssh', 'id_rsa'); fs.writeFileSync(secret, 'k');
+  const outside = fs.mkdtempSync(path.join(os.homedir(), '.pb-outside-')); const far = path.join(outside, 'f.txt'); fs.writeFileSync(far, 'y');
+  const port = await freePort();
+  const srv = startServer({ PAWBROWSE_PORT: String(port), PAWBROWSE_UPLOAD_ROOTS: root });
+  const ext = fakeExtension(port, (m) => ({ result: JSON.stringify(m.args.ops) }));
+  try {
+    await ext.ready; await sleep(50);
+    await initialize(srv);
+    const call = async (id, p) => { srv.rpc({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'browser_act', arguments: { ops: [{ op: 'upload', ref: 'e1', paths: [p] }] } } }); return (await srv.waitFor(id)).result; };
+    const hidden = await call(31, secret);
+    assert.equal(hidden.isError, true); assert.match(hidden.content[0].text, /hidden file/);
+    const away = await call(32, far);
+    assert.equal(away.isError, true); assert.match(away.content[0].text, /outside the allowed folders/);
+    const good = await call(33, path.join(root, '.', 'cv.txt'));
+    assert.notEqual(good.isError, true);
+    assert.deepEqual(JSON.parse(good.content[0].text)[0].paths, [fs.realpathSync(ok)]);
+    assert.equal(ext.received.filter((m) => m.cmd === 'act').length, 1, 'refused uploads never reach the browser');
+  } finally { ext.close(); srv.kill(); fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
 test('an extension-side error propagates as isError', async () => {
   const port = await freePort();
   const srv = startServer({ PAWBROWSE_PORT: String(port) });

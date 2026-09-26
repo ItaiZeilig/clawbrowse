@@ -19,6 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 
 const posInt = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.floor(n) : d; };
 const PORT = posInt(process.env.PAWBROWSE_PORT, 10577);
@@ -32,6 +33,26 @@ function brokerSock(port) {
 const SOCK = brokerSock(PORT);
 const BROKER_PATH = fileURLToPath(new URL('./broker.mjs', import.meta.url));
 // A stable-ish, unique session id per server process (also names this session's tab group).
+// Uploads: only files under these roots (default: the client's working directory, temp, Downloads,
+// Desktop; override with PAWBROWSE_UPLOAD_ROOTS, path-list separated). Hidden files/folders
+// (~/.ssh, .env, .aws …) are refused even inside a root — a page must never be able to talk the
+// agent into uploading secrets.
+const UPLOAD_ROOTS = (process.env.PAWBROWSE_UPLOAD_ROOTS
+  ? process.env.PAWBROWSE_UPLOAD_ROOTS.split(path.delimiter)
+  : [process.cwd(), os.tmpdir(), path.join(os.homedir(), 'Downloads'), path.join(os.homedir(), 'Desktop')])
+  .filter(Boolean).map((r) => { try { return fs.realpathSync(r); } catch { return null; } }).filter(Boolean);
+
+function checkUploadPath(p) {
+  if (typeof p !== 'string' || !p.trim()) throw new Error('upload: empty path');
+  let real;
+  try { real = fs.realpathSync(path.resolve(p)); } catch { throw new Error(`upload: no such file: ${p}`); }
+  if (!fs.statSync(real).isFile()) throw new Error(`upload: not a file: ${p}`);
+  const root = UPLOAD_ROOTS.find((r) => real === r || real.startsWith(r + path.sep));
+  if (!root) throw new Error(`upload: ${p} is outside the allowed folders (${UPLOAD_ROOTS.join(', ')}). Set PAWBROWSE_UPLOAD_ROOTS to allow another folder.`);
+  if (path.relative(root, real).split(path.sep).some((seg) => seg.startsWith('.'))) throw new Error(`upload: refusing hidden file or folder: ${p}`);
+  return real;
+}
+
 const SESSION = process.env.PAWBROWSE_SESSION || `s${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
 
 const log = (...a) => process.stderr.write(`[pawbrowse] ${a.join(' ')}\n`);
@@ -172,7 +193,7 @@ const TOOLS = [
   },
   {
     name: 'browser_act',
-    description: 'Run a list of operations on the target tab in order, then return the fresh element table — or, when the page is the same and mostly unchanged, only its new/changed rows plus the refs that are gone (refs you already hold stay valid; unchanged rows are omitted, and browser_observe returns the full table). The result says whether the page changed — if it did NOT change when you expected an effect, the action likely missed; pick a different target rather than repeating. ops: [{op:"click",ref:"e12"} (add count:2 for double-click, button:"right" for a context menu) | {op:"hover",ref:"e3"} (open hover menus/tooltips) | {op:"drag",ref:"e4",to:"e9"|to_text:"Done column"|dx:120,dy:0} (drag-and-drop, sliders, sortable lists) | {op:"click_text",text:"Built with Claude"} (click the most specific visible element matching text, for custom widgets/menus not in the table) | {op:"type",ref:"e7",text:"..."} | {op:"select",ref:"e8",value:"..."} | {op:"key",key:"Enter"} (any key or chord: "Tab", "Shift+Tab", "Escape", "PageDown", "Mod+a" = Cmd/Ctrl+A, "Control+Enter", a single character) | {op:"upload",ref:"e5",paths:["/abs/file.pdf"]} | {op:"scroll",dy:600} (add ref:"e30" to scroll the box/panel containing that control instead of the page) | {op:"tool",name:"add_to_cart",input:{...}} (call a tool the page itself offers via WebMCP — listed under "page tools" in the table; prefer it over clicking when one fits) | {op:"click_xy",x:340,y:120} (click at a point of the last browser_screenshot image — for canvas apps and things the table lacks) | {op:"wait",ms:500} | {op:"dialog",accept:true,text?:"..."} (answer an alert/confirm/prompt already open)]. JS dialogs raised by an op are answered automatically — alerts accepted, confirm/prompt DISMISSED — and reported; add dialog:"accept" (and dialog_text:"..." for a prompt) to an op to accept instead, only when the user intends it (e.g. a confirmed delete). Tips: a typed search query still needs its matching autocomplete suggestion clicked; set each requested filter explicitly (a matching-looking result alone does not prove a filter was applied); do not re-toggle a checkbox/switch/radio already in the wanted state, and do not re-type into a fill field that already shows the wanted value (the ▸ current value tells you); submit a populated search before opening a result; use wait only when the needed control is absent/disabled or results are still loading — if Submit/Search is ready, click it instead, and a recent wait is not evidence of loading.',
+    description: 'Run a list of operations on the target tab in order, then return the fresh element table — or, when the page is the same and mostly unchanged, only its new/changed rows plus the refs that are gone (refs you already hold stay valid; unchanged rows are omitted, and browser_observe returns the full table). The result says whether the page changed — if it did NOT change when you expected an effect, the action likely missed; pick a different target rather than repeating. ops: [{op:"click",ref:"e12"} (add count:2 for double-click, button:"right" for a context menu) | {op:"hover",ref:"e3"} (open hover menus/tooltips) | {op:"drag",ref:"e4",to:"e9"|to_text:"Done column"|dx:120,dy:0} (drag-and-drop, sliders, sortable lists) | {op:"click_text",text:"Built with Claude"} (click the most specific visible element matching text, for custom widgets/menus not in the table) | {op:"type",ref:"e7",text:"..."} | {op:"select",ref:"e8",value:"..."} | {op:"key",key:"Enter"} (any key or chord: "Tab", "Shift+Tab", "Escape", "PageDown", "Mod+a" = Cmd/Ctrl+A, "Control+Enter", a single character) | {op:"upload",ref:"e5",paths:["/abs/file.pdf"]} (only files under the working directory, temp, Downloads or Desktop unless PAWBROWSE_UPLOAD_ROOTS says otherwise; hidden files are always refused) | {op:"scroll",dy:600} (add ref:"e30" to scroll the box/panel containing that control instead of the page) | {op:"tool",name:"add_to_cart",input:{...}} (call a tool the page itself offers via WebMCP — listed under "page tools" in the table; prefer it over clicking when one fits) | {op:"click_xy",x:340,y:120} (click at a point of the last browser_screenshot image — for canvas apps and things the table lacks) | {op:"wait",ms:500} | {op:"dialog",accept:true,text?:"..."} (answer an alert/confirm/prompt already open)]. JS dialogs raised by an op are answered automatically — alerts accepted, confirm/prompt DISMISSED — and reported; add dialog:"accept" (and dialog_text:"..." for a prompt) to an op to accept instead, only when the user intends it (e.g. a confirmed delete). Tips: a typed search query still needs its matching autocomplete suggestion clicked; set each requested filter explicitly (a matching-looking result alone does not prove a filter was applied); do not re-toggle a checkbox/switch/radio already in the wanted state, and do not re-type into a fill field that already shows the wanted value (the ▸ current value tells you); submit a populated search before opening a result; use wait only when the needed control is absent/disabled or results are still loading — if Submit/Search is ready, click it instead, and a recent wait is not evidence of loading.',
     inputSchema: { type: 'object', properties: { ops: { type: 'array', items: { type: 'object' } }, tabId: { type: 'number' } }, required: ['ops'] },
     annotations: { title: 'Act on page (click/type/select/scroll)', readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
@@ -208,7 +229,13 @@ async function callTool(name, args) {
     case 'browser_navigate':return textResult(await callExtension('navigate', args));
     case 'browser_observe': return textResult(await callExtension('observe', args));
     case 'browser_read':    return textResult(await callExtension('read', args));
-    case 'browser_act':     return textResult(await callExtension('act', args));
+    case 'browser_act': {
+      // Enforce the upload policy here: the extension can't see the filesystem, the server can.
+      for (const op of (args && Array.isArray(args.ops) ? args.ops : [])) {
+        if (op && op.op === 'upload') op.paths = [].concat(op.paths ?? op.path ?? []).map(checkUploadPath);
+      }
+      return textResult(await callExtension('act', args));
+    }
     case 'browser_assert':  return textResult(await callExtension('assert', args));
     case 'browser_screenshot': {
       const r = await callExtension('screenshot', args);

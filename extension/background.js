@@ -288,7 +288,9 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === 'Page.javascriptDialogClosed') { openDialogs.delete(tabId); return; }
   if (method !== 'Page.javascriptDialogOpening') return;
   const pol = acting.get(tabId);
-  const where = source.sessionId ? { tabId, sessionId: source.sessionId } : tabId; // dialogs can come from frames
+  // Dialogs from any frame (incl. out-of-process iframes) are raised on — and answered via — the
+  // root session (Chromium routes them through the main frame's Page domain).
+  const where = tabId;
   if (!pol) { openDialogs.set(tabId, { type: params.type, message: params.message, where }); return; }
   const accept = pol.accept != null ? pol.accept : params.type === 'alert';
   const promptText = pol.text != null ? String(pol.text) : (params.defaultPrompt || '');
@@ -302,7 +304,16 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 async function whileActing(tabId, fn, policy) {
   const mine = { ...(policy || {}) };
   acting.set(tabId, mine);
-  try { return await fn(); } finally { if (acting.get(tabId) === mine) acting.delete(tabId); }
+  try { return await fn(); } finally {
+    // A dialog that pops up just AFTER the action (a follow-up alert once a confirm is answered) is
+    // still its consequence: keep answering with the default policy for a short while and report it
+    // with the next result, instead of leaving the page frozen for the next call.
+    if (acting.get(tabId) === mine) {
+      const linger = { linger: true };
+      acting.set(tabId, linger);
+      setTimeout(() => { if (acting.get(tabId) === linger) acting.delete(tabId); }, 1500);
+    }
+  }
 }
 
 function takeDialogLog(tabId) {
@@ -512,7 +523,7 @@ const SNAPSHOT = `(function(seed, opts){
   // Semantic controls + custom clickables: any contenteditable, an inline onclick, or a
   // keyboard-focusable [tabindex] (framework buttons — React-Native-Web Pressables, design-system
   // divs — often expose only these). cursor:pointer clickables are added separately in collect().
-  var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[tabindex]:not([tabindex="-1"]),[draggable="true"],'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
+  var selector='a[href],button,input,textarea,select,summary,[contenteditable]:not([contenteditable="false"]),[onclick],[onmousedown],[onmouseup],[onpointerdown],[onpointerup],[ondblclick],[tabindex]:not([tabindex="-1"]),[draggable="true"],'+roles.map(function(r){return '[role="'+r+'"]';}).join(',');
   // Inputs whose value is SET (not typed): typing into these is unreliable, so type() routes them
   // through a value setter. The hint tells the agent the expected format.
   var SETTABLE={date:'YYYY-MM-DD',time:'HH:MM','datetime-local':'YYYY-MM-DDTHH:MM',month:'YYYY-MM',week:'YYYY-Www',color:'#rrggbb',range:''};
@@ -566,6 +577,9 @@ const SNAPSHOT = `(function(seed, opts){
   // elementFromPoint answer with the host: that's the control's own content, not a cover.
   function slotted(t, f){ var rt=t.getRootNode(); return !!(rt && rt.host && f===rt.host && t.querySelector && t.querySelector('slot')); }
   cache.slotted=slotted;
+  // Does a pointer event landing on f count as hitting t? (t itself or inside it, its label's control,
+  // its slotted content, or its own row content.) Used before AND during the click.
+  cache.accepts=function(t, f){ return !!f && (t===f || (f.nodeType===1 && t.contains(f)) || (t.control && t.control===f) || slotted(t, f) || cache.sameWidget(t, f)); };
   cache.hits=function(t, lx, ly){
     try{
       if(lx==null){ var hp=cache.pt(t); lx=hp.x; ly=hp.y; }
@@ -621,6 +635,8 @@ const SNAPSHOT = `(function(seed, opts){
         // systems) render as role-less <div>s but get cursor:pointer. Include the ROOT of each
         // pointer region (its parent is NOT pointer) so we capture the pressable itself, not its
         // inherited-cursor text children. Bounded scan so huge DOMs stay fast.
+        // <a> without href but with inline JS handlers (onmouseenter/onmousedown/...): JS-driven links.
+        if(!seen.has(n) && n.tagName==='A' && !n.hasAttribute('href')){ for(var ai=0;ai<n.attributes.length;ai++){ if(/^on(mouse|pointer|touch|click|dblclick|key)/.test(n.attributes[ai].name)){ add(n, dx, dy, true); break; } } }
         if(!seen.has(n) && scanned<8000){
           scanned++;
           try{
@@ -697,7 +713,7 @@ const SNAPSHOT = `(function(seed, opts){
       // Only accept it if it has a real label and isn't just a wrapper around an actual control
       // (or a <label> standing in for one), so we don't flood the table with layout containers.
       var ti=e.getAttribute('tabindex');
-      if(clk || e.hasAttribute('onclick') || (ti!==null && ti!=='-1') || e.getAttribute('draggable')==='true'){
+      if(clk || e.hasAttribute('onclick') || e.hasAttribute('onmousedown') || e.hasAttribute('onmouseup') || e.hasAttribute('onpointerdown') || e.hasAttribute('onpointerup') || e.hasAttribute('ondblclick') || (ti!==null && ti!=='-1') || e.getAttribute('draggable')==='true'){
         if(e.tagName==='LABEL' && e.control) continue;
         if(!(name(e)||'').trim() || e.querySelector(selector)) continue;
         rname='button';
@@ -1310,15 +1326,18 @@ async function centerOfText(tabId, text) {
 
 async function clickAt(tabId, x, y, opts) {
   const button = (opts && opts.button) || 'left', count = Math.max(1, Math.min(3, Number(opts && opts.count) || 1));
-  await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-  // A double/triple click is successive press/release pairs with a rising clickCount.
-  // `buttons` must say which button is held: CDP defaults it to 0, and pointer-event widgets
-  // (Material components, e.g. Google's date picker "Done") ignore a pointerdown with no button.
+  // `buttons` must say which button is held (CDP defaults it to 0; pointer-event widgets ignore a
+  // pointerdown with no button). A double/triple click is press/release pairs with rising clickCount.
+  // Pipelined, like Playwright: move, press and release reach the renderer together. Awaiting each
+  // one leaves a gap in which a mousedown-triggered re-render (a blur committing a date, a ripple)
+  // swaps the element, and Chromium then sends the click to a common ancestor — or nowhere.
   const held = { left: 1, right: 2, middle: 4 }[button];
+  const sends = [sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y })];
   for (let n = 1; n <= count; n++) {
-    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: held, clickCount: n });
-    await sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: n });
+    sends.push(sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, buttons: held, clickCount: n }));
+    sends.push(sendCdp(tabId, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, buttons: 0, clickCount: n }));
   }
+  await Promise.all(sends);
 }
 
 /* ------------------------------ Waiting (settle) ---------------------------- *
@@ -1637,6 +1656,55 @@ async function invokeTool(tabId, name, input) {
   return `tool ${name}: ${res.status}${res.errorText ? ` (${res.errorText})` : ''}${out ? `\n    output (untrusted page data): ${out.slice(0, 2000).replace(/\n/g, '\n    ')}` : ''}`;
 }
 
+// Wait until the target's box stops moving (an animation, a sliding panel) before clicking it —
+// Playwright's "stable" check. Capped: a forever-spinning element is clicked anyway.
+async function waitStable(target, ref) {
+  const R = JSON.stringify(String(ref));
+  try {
+    await evaluate(target, `new Promise(function(res){
+      var c=window.__pawbrowse, e=c&&c.get&&c.get(${R}), s=e&&(c.surface?c.surface(e):e); if(!s) return res(0);
+      var key=function(){ var r=s.getBoundingClientRect(); return [r.x,r.y,r.width,r.height].map(Math.round).join(','); };
+      // Moving = its box changed, or a finite animation is still running on it or an ancestor (an
+      // orbit/slide can pause at its turning points, which looks "stable" for a frame or two).
+      var animating=function(){ try{ for(var a=s,g=0;a&&g<8;a=a.parentElement,g++){ var an=a.getAnimations?a.getAnimations():[]; for(var i=0;i<an.length;i++){ var ct=an[i].effect&&an[i].effect.getComputedTiming(); if(an[i].playState==='running' && ct && isFinite(ct.endTime)) return true; } } }catch(_){} return false; };
+      // Fast path: nothing animating and the box unchanged over one frame -> go. Once it has been seen
+      // moving, require two quiet frames in a row.
+      var last=key(), same=0, moved=animating(), t0=performance.now();
+      (function tick(){ setTimeout(function(){ var k=key(), an=animating(); if(k===last && !an){ if(++same>=(moved?2:1)) return res(1); } else { same=0; last=k; moved=true; } if(performance.now()-t0>6000) return res(0); tick(); }, 16); })();
+    })`);
+  } catch {}
+}
+
+// Click-time hit check (Playwright's hit-target interceptor): the FIRST trusted pointer/mouse event
+// of the click must land on the intended element (or what counts as it). If it would land on
+// something else — an overlay that appeared, a re-render — the whole gesture is stopped before the
+// wrong element sees it, and the op reports what intercepted it.
+async function armClick(target, ref) {
+  const R = JSON.stringify(String(ref));
+  return evaluate(target, `(function(){
+    var c=window.__pawbrowse, e=c&&c.get&&c.get(${R}), s=e&&(c.surface?c.surface(e):e); if(!s||!c.accepts) return false;
+    if(c.__arm) c.__arm.off();
+    var st={ok:null, by:null}, types=['pointerdown','mousedown','pointerup','mouseup','click','auxclick','dblclick','contextmenu'];
+    var hosted=function(f){ for(var r=s.getRootNode(); r && r.host; r=r.host.getRootNode()){ if(r.host===f) return true; } return false; };
+    // The page REPLACED the target during the gesture (re-render on hover/mousedown): the new element
+    // with the same identity (role + label) is the same control to a user.
+    var want=c.guard?c.guard(e):'', replaced=function(f){ if(s.isConnected&&e.isConnected) return false; for(var a=f,g=0;a&&g<6;a=a.parentElement,g++){ if(want && c.guard(a)===want) return true; } return false; };
+    var h=function(ev){
+      if(!ev.isTrusted) return;
+      if(st.ok===null){ var f=(ev.composedPath&&ev.composedPath()[0])||ev.target; if(f && f.nodeType!==1) f=f.parentElement;
+        st.ok = c.accepts(s,f) || hosted(f) || (e!==s && c.accepts(e,f)) || replaced(f);
+        if(!st.ok) st.by = f ? (f.tagName.toLowerCase()+(f.id?'#'+f.id:'')+' "'+String(f.innerText||f.getAttribute('aria-label')||'').trim().replace(/\\s+/g,' ').slice(0,40)+'"') : 'nothing'; }
+      if(st.ok===false){ ev.preventDefault(); ev.stopImmediatePropagation(); }
+    };
+    types.forEach(function(t){ window.addEventListener(t, h, true); });
+    c.__arm={st:st, off:function(){ types.forEach(function(t){ window.removeEventListener(t, h, true); }); c.__arm=null; }};
+    return true;
+  })()`).catch(() => false);
+}
+async function disarmClick(target) {
+  return evaluate(target, `(function(){ var c=window.__pawbrowse, a=c&&c.__arm; if(!a) return null; var st=a.st; a.off(); return st; })()`).catch(() => null);
+}
+
 const dragIntercepts = new Map(); // tabId -> drag data captured by Input.dragIntercepted
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (method === 'Input.dragIntercepted' && source.tabId != null) dragIntercepts.set(source.tabId, params.data);
@@ -1701,12 +1769,16 @@ async function runOp(tabId, op) {
       return `dialog: ${d.type} "${String(d.message || '').slice(0, 120)}" → ${op.accept ? 'accepted' : 'dismissed'}`;
     }
     case 'click': {
+      await waitStable(T, REF);
       const r = await resolveHit(T, REF);
       if (r.error) return `${op.ref}: ${r.error}`;
       const p = await top(r.x, r.y);
       if (p.covered) return `${op.ref}: element is covered by another element of the page around its frame (dismiss the overlay first)`;
       const button = ['right', 'middle'].includes(op.button) ? op.button : 'left';
+      const armed = await armClick(T, REF);
       await clickAt(tabId, p.x, p.y, { button, count: op.count });
+      const verdict = armed ? await disarmClick(T) : null;
+      if (verdict && verdict.ok === false) return `${op.ref}: click intercepted by ${verdict.by} at the moment of the click — NOT delivered (dismiss what covers it, then retry)`;
       return `${op.count > 1 ? `${op.count}x ` : ''}${button !== 'left' ? `${button}-` : ''}click ${op.ref}`;
     }
     case 'hover': {
@@ -1958,7 +2030,9 @@ async function handleCommand(cmd, args, token, session) {
       const tabId = await resolveTabId(session, args, 'inspect');
       await attach(tabId);
       assertNoOpenDialog(tabId);
-      return observe(tabId, args);
+      const t = await observe(tabId, args);
+      const dl = takeDialogLog(tabId);
+      return dl ? `${dl}\n${t}` : t;
     }
     case 'read': {
       const tabId = await resolveTabId(session, args, 'inspect');

@@ -21,7 +21,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Pitfall checks (UI Testing Playground)
+        run: node scripts/hunt/playground.mjs
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
       - name: Hunt
+        if: always()
         run: node scripts/hunt/hunt.mjs hunt-report
         env:
           CHROME_PATH: /usr/bin/google-chrome
