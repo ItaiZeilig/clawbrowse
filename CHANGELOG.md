@@ -6,6 +6,49 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-26
+
+### Fixed — clicks and results on real sites
+Found by recording a live Google Flights demo, a new real-site bug hunter, UI Testing Playground,
+and by reading Playwright's and jev-ultrafast's source.
+- **Stale results after in-page navigations.** A click that switched views without reloading
+  (Google Flights' Search) returned the previous view's controls. Waits now follow lazy-loaded
+  scripts, main-thread long tasks and route transitions.
+- **Google result rows were unclickable.** They were flagged as covered by their own visible
+  content.
+- **Menus that fade in, panels with entrance animations** (including on pages that animate
+  constantly) and **menus inside freshly loading iframes** were missing from the result.
+- **Links that wrap across lines** were reported as covered and clicked between the lines.
+- **Web-component buttons** (Lit, MDN, Shoelace…) were nameless and reported as covered; their
+  label is slotted in from outside.
+- **Clicks could miss or hit the wrong element.** Mouse input is now sent pipelined like
+  Playwright's, which fixes Google's date-picker "Done". Moving targets are awaited. A click-time
+  check stops a click that would land on anything else. Scrolls are instant even on
+  `scroll-behavior: smooth` sites. Clicks no longer scroll a target that is already visible.
+- **Recycled list rows** (virtualized lists) are refused instead of acting on the wrong item.
+- **Dialogs:** answers go through the root session; a follow-up dialog raised right after an action
+  is answered and reported instead of freezing the tab.
+- Controls hidden under a sticky header are marked `↕` (reachable), not `⊘ covered`.
+
+### Added
+- New tabs opened by an action (`target=_blank`, `window.open`) are followed.
+- `back`, `forward` and `reload` ops.
+- JS-only links (`<a>` with inline handlers) are recognised as controls.
+- Values a field would reject (email/number/url/pattern) are refused before typing.
+
+### Security
+- Uploads only accept files under the working directory, temp, Downloads or Desktop (override
+  with `PAWBROWSE_UPLOAD_ROOTS`). Hidden files (`~/.ssh`, `.env`…) are always refused.
+
+### Testing
+- `scripts/hunt/hunt.mjs` is a real-site bug hunter with checks that need no knowledge of the
+  page: recall against Chrome's accessibility tree, false "covered", stale results, refused
+  actions.
+- `scripts/hunt/playground.mjs` runs 17 live checks on UI Testing Playground.
+- Both run nightly (`.github/workflows/hunt.yml`).
+- README demo: a real 1× Google Flights run (`scripts/demo/`).
+- 98 e2e and 28 unit tests.
+
 ## [0.6.1] - 2026-09-26
 
 ### Fixed
