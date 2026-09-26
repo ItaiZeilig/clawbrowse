@@ -552,9 +552,17 @@ const SNAPSHOT = `(function(seed, opts){
       return !!((f.innerText||'').trim() || f.querySelector('img,svg') || /^(IMG|SVG)$/i.test(f.tagName));
     }catch(_){ return false; }
   };
+  // Where to point at an element: the centre of its box — except for an inline element that WRAPS
+  // (a link across two lines), whose box centre falls between the lines, on the surrounding text.
+  // Then use the centre of its first visible line box.
+  cache.pt=function(el){
+    var r=el.getBoundingClientRect(), rs=el.getClientRects(), v=el.ownerDocument.defaultView;
+    if(rs.length>1){ for(var i=0;i<rs.length;i++){ var q=rs[i]; if(q.width>=2 && q.height>=2 && q.bottom>0 && q.top<v.innerHeight) return {x:q.x+q.width/2, y:q.y+q.height/2, r:r}; } }
+    return {x:r.x+r.width/2, y:r.y+r.height/2, r:r};
+  };
   cache.hits=function(t, lx, ly){
     try{
-      if(lx==null){ var hr=t.getBoundingClientRect(); lx=hr.x+hr.width/2; ly=hr.y+hr.height/2; }
+      if(lx==null){ var hp=cache.pt(t); lx=hp.x; ly=hp.y; }
       var root=t.getRootNode(); if(!root.elementFromPoint) root=t.ownerDocument;
       var f=root.elementFromPoint(lx,ly), g=0;
       while(f && sroot(f) && g++<16){ var inner=sroot(f).elementFromPoint(lx,ly); if(!inner||inner===f) break; f=inner; }
@@ -673,7 +681,7 @@ const SNAPSHOT = `(function(seed, opts){
       }
     }
     if(!rname) continue;
-    var r=surf.getBoundingClientRect(), lx=r.x+r.width/2, ly=r.y+r.height/2, x=lx+ox, y=ly+oy;
+    var sp=cache.pt(surf), r=sp.r, lx=sp.x, ly=sp.y, x=lx+ox, y=ly+oy;
     if(x<0||x>=VW) continue;
     if(rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     var base={node:identity(e), role:rname, label:clean(fieldLabel(e)||hint(e)||rname), x:Math.round(x), y:Math.round(y), w:Math.round(r.width), h:Math.round(r.height)};
@@ -1172,7 +1180,7 @@ async function resolveHit(tabId, ref, opts) {
     var at=function(){
       var r=s.getBoundingClientRect(); if(!r.width||!r.height) return {error:'element has no size'};
       var fw=s.ownerDocument.defaultView;
-      var lx=r.x+r.width/2, ly=r.y+r.height/2;
+      var sp=c.pt?c.pt(s):{x:r.x+r.width/2, y:r.y+r.height/2}, lx=sp.x, ly=sp.y;
       // ...plus the offset chain of any ancestor iframes, giving the TOP-LEVEL click point for CDP.
       var dx=0, dy=0, w=fw, g=0;
       while(w && w.frameElement && g++<12){
@@ -1181,7 +1189,7 @@ async function resolveHit(tabId, ref, opts) {
         dy+=fr.top+fe.clientTop+(parseFloat(fcs.paddingTop)||0);
         w=fe.ownerDocument.defaultView;
       }
-      var inView=r.top>=0 && r.left>=0 && r.bottom<=fw.innerHeight && r.right<=fw.innerWidth;
+      var inView=ly>=0 && lx>=0 && ly<fw.innerHeight && lx<fw.innerWidth && (r.height>fw.innerHeight || (r.top>=0 && r.bottom<=fw.innerHeight));
       var x=Math.round(lx+dx), y=Math.round(ly+dy);
       var root=s.getRootNode(); if(!root||!root.elementFromPoint) root=s.ownerDocument;
       var f=root.elementFromPoint(lx,ly), k=0;
@@ -1296,7 +1304,7 @@ async function clickAt(tabId, x, y, opts) {
 const watches = new Map(); // tabId -> { mainFrame, inflight: Map(reqId -> startedAt), navStart, navDone }
 function tabWatch(tabId) {
   let w = watches.get(tabId);
-  if (!w) { w = { mainFrame: null, inflight: new Map(), navStart: 0, navDone: 0, committed: true, navReq: null }; watches.set(tabId, w); }
+  if (!w) { w = { mainFrame: null, inflight: new Map(), frameLoads: new Map(), navStart: 0, navDone: 0, committed: true, navReq: null }; watches.set(tabId, w); }
   return w;
 }
 // Script too: SPA route changes lazy-load code chunks and render only after they run.
@@ -1312,6 +1320,8 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     if (method === 'Network.loadingFailed' && params.requestId === w.navReq && !w.committed) w.navDone = Date.now(); // blocked/aborted navigation
     return;
   }
+  // Same for frames: an out-of-process iframe starts loading in the parent, stops in its own session.
+  if (method === 'Page.frameStoppedLoading' || method === 'Page.frameDetached') { w.frameLoads.delete(params.frameId); if (source.sessionId) return; }
   if (source.sessionId) return; // everything else: the top-level target only
   const now = Date.now();
   const begin = (loaderId) => { w.navStart = now; w.navDone = 0; w.committed = false; w.navReq = loaderId || null; w.netIdle = 0; };
@@ -1343,6 +1353,12 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       break;
     case 'Page.frameStoppedLoading':
       if (params.frameId === w.mainFrame && w.committed) w.navDone = now;
+      else w.frameLoads.delete(params.frameId);
+      break;
+    case 'Page.frameStartedLoading':
+      // An iframe (menu, widget, embed) that starts loading because of an action: its content is
+      // part of the result, so waits follow it (capped like requests).
+      if (params.frameId !== w.mainFrame) w.frameLoads.set(params.frameId, now);
       break;
     case 'Page.lifecycleEvent':
       // Tied to the NEW document's loader, so the old page's late events can't end a wait.
@@ -1436,6 +1452,10 @@ async function settle(tabId, capMs, since, opts) {
     for (const id of rel) {
       if (!w.inflight.has(id)) { rel.delete(id); windowEnd = Math.max(windowEnd, now + 150); continue; } // finished: allow a follow-up
       if (now - w.inflight.get(id) < 8000) busy = true;
+    }
+    for (const [fid, t] of w.frameLoads) {
+      if (now - t > 8000) { w.frameLoads.delete(fid); continue; }
+      if (t >= start - 50 && now - t < 2500) busy = true; // an embed/menu frame; ads shouldn't hold us long
     }
     if (busy) { idleSince = 0; await sleep(30); continue; }
     if (now < grace) { await sleep(30); continue; } // debounce window: a request may still be coming

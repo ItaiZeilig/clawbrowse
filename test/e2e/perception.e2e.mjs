@@ -739,3 +739,19 @@ test('a menu that fades in (CSS transition) is listed in the click result, not m
   await h.act({ op: 'click', ref: mustRef(r, 'One way') });
   assert.equal(await out(), 'one way');
 });
+
+/* ------------------------------ found by the bug hunter ---------------------- */
+
+test('hunter: a link that wraps across lines is not "covered" and clicks on its text', { skip }, async () => {
+  const t = await h.goto('wrap.html');
+  const line = t.split('\n').find((l) => l.includes('very long wrapped hyperlink text'));
+  assert.doesNotMatch(line, /covered/, line);
+  await h.act({ op: 'click', ref: line.split(/\s+/)[0] });
+  assert.equal(await out(), 'wrapped link');
+});
+
+test('hunter: a menu that opens in a freshly loading iframe is in the click result', { skip }, async () => {
+  const t = await h.goto('wrap.html');
+  const r = await h.act({ op: 'click', ref: mustRef(t, 'Apps') });
+  assert.match(r, /"Drive"/, r);
+});
